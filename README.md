@@ -1,4 +1,9 @@
 # Andy Segment Display Card
+### 7-segment mode (numeric) Dot-matrix mode (text)
+![Preview of display](images/segment-display-card)
+![Visual editor](images/segment-display-card-configeditor_1)
+
+segment-display-card.png
 A Home Assistant Lovelace custom card that renders an entity state in a classic digital display style:
 
 - 7-segment mode for numeric values (calculator/thermometer look)
