@@ -55,9 +55,6 @@ Hard refresh the browser.
 Configuration
 All options are available in the visual editor. YAML mode is also supported.
 
-
-[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=andybonde&button_colour=FFDD00&font_colour=000000&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/andybonde)
-
 ## Installation
 
 ### Option A — Install via HACS (published repository)
@@ -133,3 +130,7 @@ matrix_dot_on_color: ""
 matrix_cols: 5
 matrix_rows: 7
 matrix_gap: 2
+
+```
+## ☕ Support the project 
+[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=andybonde&button_colour=FFDD00&font_colour=000000&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/andybonde)
