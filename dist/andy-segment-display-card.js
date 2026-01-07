@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v1.2.3
+ * v1.2.4
  * Developed by: Andreas ("AndyBonde") 
  */
 
@@ -97,6 +97,10 @@ const FONT_5X7 = {
   "Å": [14,17,17,31,17,17,17], // treat as A
   "Ä": [14,17,17,31,17,17,17], // treat as A
   "Ö": [14,17,17,17,17,17,14], // treat as O
+  
+  // Danish / Norwegian: Æ, Ø
+  "Æ": [14,17,17,31,17,17,17], // treat as A-like shape
+  "Ø": [14,17,17,17,17,17,14], // treat as O-like shape
 };
 
 function clampInt(n, min, max) {
@@ -107,10 +111,12 @@ function clampInt(n, min, max) {
 function normalizeForMatrix(s) {
   // Uppercase and map swedish letters to approximations
   return s
-    .toUpperCase()
     .replaceAll("å", "Å")
     .replaceAll("ä", "Ä")
-    .replaceAll("ö", "Ö");
+    .replaceAll("ö", "Ö")
+    .replaceAll("æ", "Æ")
+    .replaceAll("ø", "Ø")
+    .toUpperCase();
 }
 
 function toDisplayString(stateObj, cfg) {
