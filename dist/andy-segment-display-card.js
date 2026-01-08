@@ -1,6 +1,20 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v1.2.4
- * Developed by: Andreas ("AndyBonde") 
+ * v1.2.5
+ * ------------------------------------------------------------------
+ * Developed by: Andreas ("AndyBonde") with some help from AI :).
+ *
+ * License / Disclaimer:
+ * - Free to use, copy, modify, redistribute.
+ * - Provided "AS IS" without warranty. No liability.
+ * - Not affiliated with Home Assistant / Nabu Casa.
+ * - Runs fully in the browser.
+ *
+ * Install: Se README.md in GITHUB
+ *
+ * Changelog 1.2.5 - 2026-01-08
+ * - Added support for Danish / Norwegian characters
+ * - Added Decimal management
+ * - Added Leading Zero function if value is without leading zero it will be added
  */
 
 const CARD_TAG = "andy-segment-display-card";
@@ -17,7 +31,15 @@ const DEFAULTS = {
   show_unused: true,
   unused_color: "#2A2F2C",
 
+  // Manual decimals (wins over auto_decimals)
   decimals: null,
+
+  // Auto-limit decimals if sensor provides too many (null = disabled)
+  auto_decimals: null,
+
+  // Add leading zero for values like .5 / -.5
+  leading_zero: true,
+
   show_unit: false,
   max_chars: 10,
 
@@ -93,14 +115,12 @@ const FONT_5X7 = {
   "Y": [17,17,10,4,4,4,4],
   "Z": [31,1,2,4,8,16,31],
 
-  // Swedish-ish fallbacks (very simple approximations)
+  // Nordic fallbacks
   "Å": [14,17,17,31,17,17,17], // treat as A
   "Ä": [14,17,17,31,17,17,17], // treat as A
   "Ö": [14,17,17,17,17,17,14], // treat as O
-  
-  // Danish / Norwegian: Æ, Ø
-  "Æ": [14,17,17,31,17,17,17], // treat as A-like shape
-  "Ø": [14,17,17,17,17,17,14], // treat as O-like shape
+  "Æ": [14,17,17,31,17,17,17], // A-like
+  "Ø": [14,17,17,17,17,17,14], // O-like
 };
 
 function clampInt(n, min, max) {
@@ -109,7 +129,6 @@ function clampInt(n, min, max) {
 }
 
 function normalizeForMatrix(s) {
-  // Uppercase and map swedish letters to approximations
   return s
     .replaceAll("å", "Å")
     .replaceAll("ä", "Ä")
@@ -122,21 +141,48 @@ function normalizeForMatrix(s) {
 function toDisplayString(stateObj, cfg) {
   if (!stateObj) return "—";
 
-  let v = stateObj.state;
+  let raw = stateObj.state;
 
   // numeric formatting
-  const num = Number(v);
-  const isNum = v !== "" && !Number.isNaN(num) && Number.isFinite(num);
+  const num = Number(raw);
+  const isNum = raw !== "" && !Number.isNaN(num) && Number.isFinite(num);
 
-  if (isNum && typeof cfg.decimals === "number") {
-    v = num.toFixed(clampInt(cfg.decimals, 0, 6));
+  if (isNum) {
+    // 1) Manual decimals wins
+    if (typeof cfg.decimals === "number") {
+      raw = num.toFixed(clampInt(cfg.decimals, 0, 6));
+    } 
+    // 2) Auto decimals: only if raw already has decimals and exceeds limit
+    else if (typeof cfg.auto_decimals === "number") {
+      const limit = clampInt(cfg.auto_decimals, 0, 6);
+      const s = String(raw).replace(",", ".");
+      const dot = s.indexOf(".");
+      if (dot >= 0) {
+        const decLen = s.length - dot - 1;
+        if (decLen > limit) {
+          raw = num.toFixed(limit);
+        } else {
+          raw = s; // keep original precision
+        }
+      } else {
+        raw = String(raw);
+      }
+    }
+  }
+
+  // Leading zero (e.g. .5 -> 0.5, -.5 -> -0.5)
+  if (cfg.leading_zero) {
+    const s = String(raw).replace(",", ".");
+    if (s.startsWith(".")) raw = `0${s}`;
+    else if (s.startsWith("-.") ) raw = s.replace("-.", "-0.");
+    else raw = s;
   }
 
   if (cfg.show_unit && stateObj.attributes?.unit_of_measurement) {
-    v = `${v}${stateObj.attributes.unit_of_measurement}`;
+    raw = `${raw}${stateObj.attributes.unit_of_measurement}`;
   }
 
-  let s = String(v);
+  let s = String(raw);
 
   // Segment mode: keep digits + dot + minus
   if ((cfg.render_style || "segment") === "segment") {
@@ -150,7 +196,6 @@ function toDisplayString(stateObj, cfg) {
       })
       .join("");
   } else {
-    // Matrix mode: allow broader text (we'll render only supported chars; others => space)
     s = normalizeForMatrix(s);
   }
 
@@ -202,10 +247,8 @@ function svgForMatrixChar(ch, cfg) {
   const rows = clampInt(cfg.matrix_rows ?? 7, 5, 9);
   const gap = clampInt(cfg.matrix_gap ?? 2, 0, 6);
 
-  // We only ship 5x7 font; if user changes cols/rows, we still render within viewbox
   const pattern = FONT_5X7[ch] || FONT_5X7[" "];
 
-  // Viewbox units: each dot cell is 10x10 with gap units
   const cell = 10;
   const w = cols * cell + (cols - 1) * gap;
   const h = rows * cell + (rows - 1) * gap;
@@ -214,7 +257,6 @@ function svgForMatrixChar(ch, cfg) {
   for (let r = 0; r < rows; r++) {
     const rowBits = pattern[r] ?? 0;
     for (let c = 0; c < cols; c++) {
-      // leftmost bit is MSB for 5-bit row (bit 4..0)
       const bitIndex = (cols - 1) - c;
       const on = ((rowBits >> bitIndex) & 1) === 1;
       const x = c * (cell + gap);
@@ -233,7 +275,6 @@ function svgForMatrixChar(ch, cfg) {
 class AndySegmentDisplayCard extends HTMLElement {
   constructor() {
     super();
-    // ✅ unique id per instance for CSS scoping
     this._uid = `asdc-${Math.random().toString(36).slice(2, 10)}`;
   }
 
@@ -291,7 +332,6 @@ class AndySegmentDisplayCard extends HTMLElement {
         ? cfg.matrix_dot_on_color
         : cfg.text_color;
 
-    // ✅ IMPORTANT CHANGE: wrap all markup in a unique root and scope all CSS to it
     this.innerHTML = `
       <div id="${this._uid}" class="asdc-root">
         <ha-card class="asdc-card">
@@ -321,7 +361,6 @@ class AndySegmentDisplayCard extends HTMLElement {
             box-sizing: border-box;
           }
 
-          /* Auto sizing: use aspect ratio to feel like a display */
           #${this._uid} .wrap.auto.segment .display {
             width: 100%;
             aspect-ratio: ${clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40)} / 2.2;
@@ -331,7 +370,6 @@ class AndySegmentDisplayCard extends HTMLElement {
             aspect-ratio: ${clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40)} / 2.8;
           }
 
-          /* Fixed height */
           #${this._uid} .wrap.fixed .display {
             height: ${clampInt(sizePx, 18, 300)}px;
           }
@@ -339,7 +377,7 @@ class AndySegmentDisplayCard extends HTMLElement {
           #${this._uid} .display {
             display: flex;
             align-items: center;
-            justify-content: flex-end; /* calculator style */
+            justify-content: flex-end;
             gap: 6px;
             width: 100%;
           }
@@ -350,7 +388,6 @@ class AndySegmentDisplayCard extends HTMLElement {
             flex: 0 0 auto;
           }
 
-          /* Segment mode specifics */
           #${this._uid} .wrap.segment .char.dot { width: 26px; }
 
           #${this._uid} .wrap.segment .seg.on {
@@ -361,7 +398,6 @@ class AndySegmentDisplayCard extends HTMLElement {
             fill: ${showUnused ? cfg.unused_color : "transparent"};
           }
 
-          /* Matrix mode dot colors */
           #${this._uid} .wrap.matrix .dot.on {
             fill: ${dotOn};
             filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
@@ -404,7 +440,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
       tf.placeholder = placeholder;
       tf.configValue = key;
 
-      // ✅ Save while typing (fixes "Title snaps back" issue)
       tf.addEventListener("input", (e) => this._onChange(e));
       tf.addEventListener("change", (e) => this._onChange(e));
       tf.addEventListener("value-changed", (e) => this._onChange(e));
@@ -443,7 +478,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
       return s.toUpperCase();
     };
 
-    // ✅ One color “button” that shows chosen color + opens picker
     const mkColor = (label, key, allowEmpty = false) => {
       const row = document.createElement("div");
       row.className = "colorRow";
@@ -455,18 +489,16 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
       tf.addEventListener("change", (e) => this._onChange(e));
       tf.addEventListener("value-changed", (e) => this._onChange(e));
 
-      // The actual button (input color) styled as a square showing current color
       const btn = document.createElement("input");
       btn.type = "color";
       btn.className = "colorBtn";
       btn.dataset.configValue = key;
 
-      // When user picks a color -> update tf + commit
       btn.addEventListener("input", (e) => {
         const val = String(e.target.value || "").toUpperCase();
         tf.value = val;
         this._commit(key, val);
-        this._sync(); // refresh button color if needed
+        this._sync();
       });
 
       row._tf = tf;
@@ -479,7 +511,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
       return row;
     };
 
-    // Entity control: ha-selector preferred (HA standard UI), fallback entity-picker
     const mkEntityControl = () => {
       const hasSelector = !!customElements.get("ha-selector");
       if (hasSelector) {
@@ -500,7 +531,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
       return ep;
     };
 
-    // ha-select (dropdown)
     const mkSelect = (label, key, options) => {
       const sel = document.createElement("ha-select");
       sel.label = label;
@@ -513,7 +543,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
         sel.appendChild(item);
       });
 
-      // prevent bubble-closing without breaking editor
       const stop = (e) => e.stopPropagation();
       sel.addEventListener("click", stop);
       sel.addEventListener("opened", stop);
@@ -525,18 +554,15 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
         this._onChange(e);
       });
 
-      // fallback for some builds
       sel.addEventListener("selected", (e) => {
         e.stopPropagation();
-        // do NOT set sel.selected (getter-only in some versions)
-        // Just commit from sel.value if present
         if (sel.value) this._commit(key, sel.value);
       });
 
       return sel;
     };
 
-    // ---------- Build UI (Entity MUST be first) ----------
+    // ---------- UI ----------
     this._elEntity = mkEntityControl();
     root.appendChild(this._elEntity);
 
@@ -562,11 +588,24 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
     root.appendChild(this._elMaxChars);
 
     const secNum = mkSection("Numeric formatting");
-    this._elDecimals = mkText("Decimals (empty = keep original)", "decimals", "number", "");
+
+    // Manual decimals
+    this._elDecimals = mkText("Decimals (manual) (empty = keep original)", "decimals", "number", "");
+    secNum.appendChild(this._elDecimals);
+
+    // Auto decimals (new)
+    this._elAutoDecimals = mkText("Auto limit decimals (empty = disabled)", "auto_decimals", "number", "");
+    secNum.appendChild(this._elAutoDecimals);
+
+    // Leading zero (new)
+    const { wrap: lzWrap, sw: lzSw } = mkSwitch("Leading zero (e.g. .5 → 0.5)", "leading_zero");
+    this._elLeadingZero = lzSw;
+    secNum.appendChild(lzWrap);
+
     const { wrap: unitWrap, sw: unitSw } = mkSwitch("Show unit (e.g. °C)", "show_unit");
     this._elShowUnit = unitSw;
-    secNum.appendChild(this._elDecimals);
     secNum.appendChild(unitWrap);
+
     root.appendChild(secNum);
 
     const secSeg = mkSection("7-segment options");
@@ -593,7 +632,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
       .colorRow { display:flex; align-items:flex-end; gap:10px; }
       .colorRow ha-textfield { flex: 1 1 auto; }
 
-      /* One single color button showing current color */
       .colorBtn{
         width: 44px;
         height: 38px;
@@ -616,8 +654,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
     const v = norm === null ? (allowEmpty ? "" : "#000000") : norm;
 
     row._tf.value = v;
-
-    // input[type=color] cannot be empty, but should SHOW chosen color.
     row._btn.value = v && v !== "" ? v : "#000000";
     row._btn.style.opacity = (v && v !== "") ? "1" : "0.35";
   }
@@ -625,7 +661,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
   _sync() {
     if (!this._hass || !this._config) return;
 
-    // entity selector/picker
     this._elEntity.hass = this._hass;
     this._elEntity.value = this._config.entity || "";
 
@@ -633,14 +668,18 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
     this._elSize.value = String(this._config.size_px ?? 0);
     this._elMaxChars.value = String(this._config.max_chars ?? DEFAULTS.max_chars);
 
-    // IMPORTANT: only set .value (no .selected)
     this._elRenderStyle.value = this._config.render_style || "segment";
 
     this._elShowUnit.checked = !!this._config.show_unit;
     this._elShowUnused.checked = !!this._config.show_unused;
 
+    this._elLeadingZero.checked = this._config.leading_zero !== false;
+
     this._elDecimals.value =
       this._config.decimals === null || this._config.decimals === undefined ? "" : String(this._config.decimals);
+
+    this._elAutoDecimals.value =
+      this._config.auto_decimals === null || this._config.auto_decimals === undefined ? "" : String(this._config.auto_decimals);
 
     this._syncColor(this._rowText, this._config.text_color);
     this._syncColor(this._rowBg, this._config.background_color);
@@ -663,7 +702,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
   }
 
   _eventValue(ev, target) {
-    // HA components often provide real value here
     if (ev && ev.detail && typeof ev.detail.value !== "undefined") return ev.detail.value;
     return target.value;
   }
@@ -673,35 +711,30 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
     const key = target.configValue || target.dataset?.configValue;
     if (!key) return;
 
-    // switches
     if (typeof target.checked !== "undefined") {
       return this._commit(key, target.checked);
     }
 
     let value = this._eventValue(ev, target);
 
-    // numbers
     if (key === "size_px" || key === "max_chars") {
       value = value === "" ? 0 : Number(value);
       return this._commit(key, value);
     }
 
-    if (key === "decimals") {
+    if (key === "decimals" || key === "auto_decimals") {
       value = value === "" ? null : Number(value);
       if (!Number.isFinite(value)) value = null;
       return this._commit(key, value);
     }
 
-    // entity / render / title
     if (key === "entity" || key === "render_style" || key === "title") {
       return this._commit(key, value);
     }
 
-    // HEX color fields
     const allowEmpty = (key === "matrix_dot_on_color");
     const norm = (this._rowText._normalizeHex)(value, allowEmpty);
     if (norm === null) {
-      // invalid hex -> revert
       this._sync();
       return;
     }
@@ -711,7 +744,6 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
 
 customElements.define(EDITOR_TAG, AndySegmentDisplayCardEditor);
 
-// Register in card picker
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD_TAG,
