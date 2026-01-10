@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v1.2.6
+ * v1.2.7
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -13,6 +13,11 @@
  *
  * Changelog 
  *
+ * 1.2.7 - 2026-01-10
+ * FIX: Safe customElements.define (avoid duplicate define errors)
+ * FIX: Wrap in IIFE (avoid "Identifier already declared")
+ * FIX: Update SVG when style/config changes (not only when text changes)
+ *
  * 1.2.6 - 2026-01-10
  * Added support for card-mod customization
  * Fixed flickering / scrolling issues
@@ -22,7 +27,7 @@
  * - Added Decimal management
  * - Added Leading Zero function if value is without leading zero it will be added
  */
-
+(() => {
 const CARD_TAG = "andy-segment-display-card";
 const EDITOR_TAG = "andy-segment-display-card-editor";
 
@@ -915,3 +920,4 @@ window.customCards.push({
   name: "Andy Segment Display Card",
   description: "7-segment (digits) or 5x7 dot-matrix (text) display for an entity value.",
 });
+})();
