@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.6
+- Added support for card-mod customization
+- Fixed refresh flickering / scrolling issues
+
 ## v1.2.5
 - Added support for Danish / Norwegian characters
 - Added Decimal management
