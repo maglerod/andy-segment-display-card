@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v1.2.5
+ * v1.2.6
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -11,7 +11,13 @@
  *
  * Install: Se README.md in GITHUB
  *
- * Changelog 1.2.5 - 2026-01-08
+ * Changelog 
+ *
+ * 1.2.6 - 2026-01-10
+ * Added support for card-mod customization
+ * Fixed flickering / scrolling issues
+ * 
+ * 1.2.5 - 2026-01-08
  * - Added support for Danish / Norwegian characters
  * - Added Decimal management
  * - Added Leading Zero function if value is without leading zero it will be added
@@ -151,7 +157,7 @@ function toDisplayString(stateObj, cfg) {
     // 1) Manual decimals wins
     if (typeof cfg.decimals === "number") {
       raw = num.toFixed(clampInt(cfg.decimals, 0, 6));
-    } 
+    }
     // 2) Auto decimals: only if raw already has decimals and exceeds limit
     else if (typeof cfg.auto_decimals === "number") {
       const limit = clampInt(cfg.auto_decimals, 0, 6);
@@ -276,6 +282,10 @@ class AndySegmentDisplayCard extends HTMLElement {
   constructor() {
     super();
     this._uid = `asdc-${Math.random().toString(36).slice(2, 10)}`;
+    this._built = false;
+    this._els = null;
+    this._lastText = null;
+    this._raf = 0;    
   }
 
   static getConfigElement() {
@@ -292,16 +302,170 @@ class AndySegmentDisplayCard extends HTMLElement {
     this._render();
   }
 
+  
   set hass(hass) {
-    this._hass = hass;
-    this._render();
+  this._hass = hass;
+  this._scheduleRender();
   }
+//  set hass(hass) {
+//    this._hass = hass;
+//    this._render();
+//  }
 
   getCardSize() {
     return 2;
   }
 
+  _scheduleRender() {
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = requestAnimationFrame(() => {
+      this._raf = 0;
+      this._render();
+    });
+  }
+
+  
   _render() {
+  if (!this._config || !this._hass) return;
+
+  const cfg = this._config;
+  const stateObj = cfg.entity ? this._hass.states[cfg.entity] : null;
+  const text = toDisplayString(stateObj, cfg);
+
+  const sizePx = Number(cfg.size_px ?? 0);
+  const isAuto = !Number.isFinite(sizePx) || sizePx <= 0;
+  const style = cfg.render_style || "segment";
+
+  // Build once
+  if (!this._built) {
+    this._built = true;
+
+    this.innerHTML = `
+      <div id="${this._uid}" class="asdc-root">
+        <ha-card class="asdc-card">
+          <div class="title"></div>
+          <div class="wrap">
+            <div class="display" role="img"></div>
+          </div>
+        </ha-card>
+
+        <style>
+          #${this._uid} .asdc-card {
+            overflow: hidden;
+          }
+          #${this._uid} .title{
+            padding: 10px 12px 0 12px;
+            font-size: 14px;
+            opacity: 0.85;
+            display: none;
+          }
+          #${this._uid} .wrap {
+            width: 100%;
+            padding: 10px 12px 12px 12px;
+            box-sizing: border-box;
+          }
+          #${this._uid} .display {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 6px;
+            width: 100%;
+          }
+          #${this._uid} .char {
+            height: 100%;
+            width: auto;
+            flex: 0 0 auto;
+          }
+          #${this._uid} .wrap.segment .char.dot { width: 26px; }
+
+          /* Segment mode */
+          #${this._uid} .wrap.segment .seg.on {
+            fill: var(--asdc-text-color);
+            filter: drop-shadow(0 0 6px rgba(0,0,0,0.35));
+          }
+          #${this._uid} .wrap.segment .seg.off {
+            fill: var(--asdc-unused-fill);
+          }
+
+          /* Matrix mode */
+          #${this._uid} .wrap.matrix .dot.on {
+            fill: var(--asdc-dot-on);
+            filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
+          }
+          #${this._uid} .wrap.matrix .dot.off {
+            fill: var(--asdc-dot-off);
+          }
+        </style>
+      </div>
+    `;
+
+    const root = this.querySelector(`#${this._uid}`);
+    this._els = {
+      card: root.querySelector("ha-card"),
+      title: root.querySelector(".title"),
+      wrap: root.querySelector(".wrap"),
+      display: root.querySelector(".display"),
+    };
+  }
+
+  // Update layout classes & sizing (no rebuild)
+  const maxChars = clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40);
+
+  this._els.wrap.className = `wrap ${isAuto ? "auto" : "fixed"} ${style}`;
+
+  if (isAuto) {
+    const ratio = (style === "segment") ? (maxChars / 2.2) : (maxChars / 2.8);
+    this._els.display.style.width = "100%";
+    this._els.display.style.height = "";
+    this._els.display.style.aspectRatio = `${ratio}`;
+  } else {
+    this._els.display.style.aspectRatio = "";
+    this._els.display.style.height = `${clampInt(sizePx, 18, 300)}px`;
+  }
+
+  // Title (no rebuild)
+  if (cfg.title) {
+    this._els.title.textContent = cfg.title;
+    this._els.title.style.display = "block";
+  } else {
+    this._els.title.textContent = "";
+    this._els.title.style.display = "none";
+  }
+
+  // Card background: default via --ha-card-background so card_mod can override
+  this._els.card.style.setProperty("--ha-card-background", cfg.background_color);
+
+  // Colors via CSS vars
+  const showUnused = !!cfg.show_unused;
+  const dotOn =
+    cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
+      ? cfg.matrix_dot_on_color
+      : cfg.text_color;
+
+  this._els.card.style.setProperty("--asdc-text-color", cfg.text_color);
+  this._els.card.style.setProperty("--asdc-dot-on", dotOn);
+  this._els.card.style.setProperty("--asdc-dot-off", cfg.matrix_dot_off_color);
+  this._els.card.style.setProperty("--asdc-unused-fill", showUnused ? cfg.unused_color : "transparent");
+
+  // Only update SVGs if text actually changed (prevents blink)
+  if (text !== this._lastText) {
+    this._lastText = text;
+
+    const chars = text
+      .split("")
+      .map((ch) => {
+        if (style === "segment") return svgForSegmentChar(ch, cfg);
+        return svgForMatrixChar(ch, cfg);
+      })
+      .join("");
+
+    this._els.display.innerHTML = chars;
+    this._els.display.setAttribute("aria-label", `${cfg.entity} value ${text}`);
+  }
+}
+
+  
+  _renderOld() {
     if (!this._config || !this._hass) return;
 
     const cfg = this._config;
@@ -323,9 +487,7 @@ class AndySegmentDisplayCard extends HTMLElement {
 
     const showUnused = !!cfg.show_unused;
 
-    const titleHtml = cfg.title
-      ? `<div class="title">${cfg.title}</div>`
-      : "";
+    const titleHtml = cfg.title ? `<div class="title">${cfg.title}</div>` : "";
 
     const dotOn =
       cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
@@ -334,7 +496,8 @@ class AndySegmentDisplayCard extends HTMLElement {
 
     this.innerHTML = `
       <div id="${this._uid}" class="asdc-root">
-        <ha-card class="asdc-card">
+        <!-- v1.2.6: Use HA variable for default background (so card_mod can override background normally) -->
+        <ha-card class="asdc-card" style="--ha-card-background: ${cfg.background_color};">
           ${titleHtml}
           <div class="wrap ${isAuto ? "auto" : "fixed"} ${style}">
             <div class="display" role="img" aria-label="${cfg.entity} value ${text}">
@@ -345,7 +508,9 @@ class AndySegmentDisplayCard extends HTMLElement {
 
         <style>
           #${this._uid} .asdc-card {
-            background: ${cfg.background_color};
+            /* IMPORTANT:
+               Do NOT set background here.
+               card_mod must be able to override with: ha-card { background: ... } */
             overflow: hidden;
           }
 
@@ -593,11 +758,11 @@ class AndySegmentDisplayCardEditor extends HTMLElement {
     this._elDecimals = mkText("Decimals (manual) (empty = keep original)", "decimals", "number", "");
     secNum.appendChild(this._elDecimals);
 
-    // Auto decimals (new)
+    // Auto decimals
     this._elAutoDecimals = mkText("Auto limit decimals (empty = disabled)", "auto_decimals", "number", "");
     secNum.appendChild(this._elAutoDecimals);
 
-    // Leading zero (new)
+    // Leading zero
     const { wrap: lzWrap, sw: lzSw } = mkSwitch("Leading zero (e.g. .5 → 0.5)", "leading_zero");
     this._elLeadingZero = lzSw;
     secNum.appendChild(lzWrap);
