@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0
+ * v2.0.1
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,7 +12,7 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog 
- * 2.0 - 2026-01-22
+ * 2.0.1 - 2026-01-22
  * Multi-entity support (Slides): rotate between multiple entities instead of showing only one
  * Slide-based animation engine: configurable In / Stay / Out timing per slide
  * Multiple animation styles: Left, Right, Top, Bottom, Billboard, Matrix, and Running
@@ -47,7 +47,7 @@
  */
 
 (() => {
-  console.info("Andy Segment Display Card loaded: v2.0.0");
+  console.info("Andy Segment Display Card loaded: v2.0.1");
 
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
@@ -808,10 +808,16 @@ function svgForMatrixChar(ch, cfg) {
         this._els.title.style.display = "none";
       }
 
+      // Card background (card_mod friendly)
       this._els.card.style.setProperty("--ha-card-background", cfg.background_color);
 
+      // Active text color (interval override)
       const activeTextColor = this._computeActiveTextColor(stateObj);
 
+      // Dot-matrix Dot ON color:
+      // - In v2, intervals should override ALL render styles.
+      // - For backwards compatibility, if no interval matches (activeTextColor == base text_color),
+      //   we fall back to legacy matrix_dot_on_color (if provided).
       const baseTextColor = (cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
       const dotOnLegacy =
         cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
@@ -963,6 +969,8 @@ function svgForMatrixChar(ch, cfg) {
         btn.dataset.configValue = key;
 
         btn.addEventListener("input", (e) => {
+          // IMPORTANT: do NOT commit on every input while the native picker is open.
+          // Committing triggers HA config updates which can close the picker when the user adjusts hue/palette.
           const val = String(e.target.value || "").toUpperCase();
           tf.value = val;
         });
@@ -1787,7 +1795,6 @@ row._tf = tf;
     customElements.define(EDITOR_TAG, AndySegmentDisplayCardEditor);
   }
 
-  
   try {
     if (String(CARD_TAG).endsWith("-development")) {
       const base = String(CARD_TAG).replace(/-development$/,"");
