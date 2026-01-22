@@ -47,7 +47,7 @@
  */
 
 (() => {
-  console.info("Andy Segment Display Card loaded: v2.0");
+  console.info("Andy Segment Display Card loaded: v2.0.0");
 
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
@@ -76,7 +76,7 @@
     show_unused: true,
     unused_color: "#2A2F2C",
 
-    // sizing (auto aspect ratio uses this unless /* auto_max_chars removed in v2.0.19 */ = true)
+    // sizing (auto aspect ratio uses this unless /* auto_max_chars removed in v2.0.23 */ = true)
     max_chars: 10,
     // Color intervals (optional)
     color_intervals: [], // { from:number, to:number, color:"#RRGGBB" }
@@ -88,6 +88,7 @@
   };
 
   const DEFAULT_SLIDE = {
+  animate_single: false,
     entity: "",
     title: "",
 
@@ -505,6 +506,11 @@ function svgForMatrixChar(ch, cfg) {
     _startLoop() {
       const cfg = this._config;
       const slides = Array.isArray(cfg?.slides) ? cfg.slides : [];
+      // Single-slide: do not auto-animate unless explicitly enabled
+      if (slides.length === 1 && !slides[0]?.animate_single) {
+        this._clearTimer();
+        return;
+      }
       if (!cfg || !slides || slides.length < 1) {
         this._clearTimer();
         return;
@@ -519,6 +525,12 @@ function svgForMatrixChar(ch, cfg) {
     async _nextSlide() {
       const cfg = this._config;
       const slides = Array.isArray(cfg?.slides) ? cfg.slides : [];
+      // Single-slide: only animate if enabled
+      if (slides.length === 1 && !slides[0]?.animate_single) {
+        this._clearTimer();
+        this._isSwitching = false;
+        return;
+      }
       if (!cfg || slides.length < 1 || !this._els) {
         this._clearTimer();
         return;
@@ -796,16 +808,10 @@ function svgForMatrixChar(ch, cfg) {
         this._els.title.style.display = "none";
       }
 
-      // Card background (card_mod friendly)
       this._els.card.style.setProperty("--ha-card-background", cfg.background_color);
 
-      // Active text color (interval override)
       const activeTextColor = this._computeActiveTextColor(stateObj);
 
-      // Dot-matrix Dot ON color:
-      // - In v2, intervals should override ALL render styles.
-      // - For backwards compatibility, if no interval matches (activeTextColor == base text_color),
-      //   we fall back to legacy matrix_dot_on_color (if provided).
       const baseTextColor = (cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
       const dotOnLegacy =
         cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
@@ -878,6 +884,7 @@ function svgForMatrixChar(ch, cfg) {
 
     set hass(hass) {
       this._hass = hass;
+
       if (this._built) {
         try {
           if (this._slideEntity) this._slideEntity.hass = hass;
@@ -1195,6 +1202,11 @@ row._tf = tf;
       const { wrap: fadeWrap, sw: fadeSw } = mkSwitch("Fade toggle", "__slide_fade");
       this._slideFade = fadeSw;
       secSwitch.appendChild(fadeWrap);
+
+      const { wrap: asWrap, sw: asSw } = mkSwitch("Animate single slide", "__slide_animate_single");
+      this._slideAnimateSingle = asSw;
+      this._animateSingleWrap = asWrap;
+      secSwitch.appendChild(asWrap);
 
       this._slideShowStyle = mkSelect("Show style", "__slide_show_style", [
         ["running", "Running"],
@@ -1519,6 +1531,9 @@ row._tf = tf;
       this._slideIn.value   = String(s.in_s ?? DEFAULT_SLIDE.in_s);
 
       this._slideFade.checked = !!s.fade;
+      this._slideAnimateSingle.checked = !!s.animate_single;
+      const onlyOne = (this._config?.slides?.length === 1);
+      if (this._animateSingleWrap) this._animateSingleWrap.style.display = onlyOne ? "" : "none";
       this._slideShowStyle.value = s.show_style || DEFAULT_SLIDE.show_style;
       this._slideHideStyle.value = s.hide_style || DEFAULT_SLIDE.hide_style;
 
@@ -1647,12 +1662,13 @@ row._tf = tf;
         return;
       }
 
-      if (key === "__slide_leading_zero" || key === "__slide_show_unit" || key === "__slide_fade" || key === "__slide_hide_prev_first") {
+      if (key === "__slide_leading_zero" || key === "__slide_show_unit" || key === "__slide_fade" || key === "__slide_hide_prev_first" || key === "__slide_animate_single") {
         const checked = !!target.checked;
         const field =
           (key === "__slide_leading_zero") ? "leading_zero" :
           (key === "__slide_show_unit") ? "show_unit" :
           (key === "__slide_fade") ? "fade" :
+          (key === "__slide_animate_single") ? "animate_single" :
           "hide_prev_first";
         this._slideCommitField(field, checked);
         return;
@@ -1766,11 +1782,12 @@ row._tf = tf;
     }
   }
 
-
+  // Register editor for this card tag
   if (!customElements.get(EDITOR_TAG)) {
     customElements.define(EDITOR_TAG, AndySegmentDisplayCardEditor);
   }
 
+  
   try {
     if (String(CARD_TAG).endsWith("-development")) {
       const base = String(CARD_TAG).replace(/-development$/,"");
