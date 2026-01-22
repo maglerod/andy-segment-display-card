@@ -52,29 +52,21 @@ Features:
 - Enhanced editor layout — Slides list separated for better readability
 - More robust architecture — animation logic split into modular functions for future expansion
 
-
-
-
-
-Installation (HACS)
-1. Install the repository in HACS (Dashboard/Plugin).
-2. Ensure the Lovelace resource is added (HACS usually adds it automatically).
-3. Add the card to your dashboard via the card picker: Andy Segment Display Card.
-
-Resource URL is typically:
-/hacsfiles/andy-segment-display-card/andy-segment-display-card.js?hacstag=...
-
-Manual Installation:
-Copy andy-segment-display-card.js to:
-/config/www/andy-segment-display-card.js
-Settings → Dashboards → Resources → Add:
-URL: /local/andy-segment-display-card.js
-Type: JavaScript Module
-
-Hard refresh the browser.
-
 Configuration
 All options are available in the visual editor. YAML mode is also supported.
+
+
+## ☕ Support the project 
+I’m a Home Automation enthusiast who spends way too many late nights building custom cards, dashboards and small tools for Home Assistant.
+I love creating clean, useful UI components and sharing them for free with the community, and I try to help others whenever I can with ideas, code and support.
+If you enjoy my work or use any of my cards in your setup, your support means a lot and helps me keep experimenting, improving and maintaining everything.
+
+<a href="https://www.buymeacoffee.com/AndyBonde" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" 
+       alt="Buy Me A Coffee" 
+       style="height: 60px; width: 217px;">
+</a>
+
 
 ## Installation
 
@@ -153,14 +145,3 @@ matrix_rows: 7
 matrix_gap: 2
 
 ```
-## ☕ Support the project 
-I’m a Home Automation enthusiast who spends way too many late nights building custom cards, dashboards and small tools for Home Assistant.
-I love creating clean, useful UI components and sharing them for free with the community, and I try to help others whenever I can with ideas, code and support.
-If you enjoy my work or use any of my cards in your setup, your support means a lot and helps me keep experimenting, improving and maintaining everything.
-
-<a href="https://www.buymeacoffee.com/AndyBonde" target="_blank">
-  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" 
-       alt="Buy Me A Coffee" 
-       style="height: 60px; width: 217px;">
-</a>
-
