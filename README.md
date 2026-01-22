@@ -1,15 +1,13 @@
-# Andy Segment Display Card
+# Andy Segment Display Card V2.0
 
-### 7-segment mode (numeric) Dot-matrix mode (text)
+### 7-segment mode (numeric) Dot-matrix mode (text) & Plain text
 ![Preview of display](Images/segment-display-card.png)
 ![Visual editor](Images/segment-display-card-configeditor_1.png)
 
 > **Recommended installation method:** HACS  
 > Manual installation is supported but not recommended unless HACS is unavailable.
 
-
-segment-display-card.png
-A Home Assistant Lovelace custom card that renders an entity state in a classic digital display style:
+A Home Assistant Lovelace custom card that renders an entity state in a classic digital display style, and now support multiple entities!
 
 - 7-segment mode for numeric values (calculator/thermometer look)
 - 5x7 dot-matrix mode for text states
@@ -34,6 +32,29 @@ Features:
 
 - Safe multi-card usage:
 - Instance-scoped CSS prevents multiple cards from affecting each other
+
+# New in version 2! 
+- Multi-entity support (Slides) — rotate between multiple entities instead of showing only one
+- Slide-based animation engine — configurable In / Stay / Out timing per slide
+- Multiple animation styles — Left, Right, Top, Bottom, Billboard, Matrix, and Running
+- Continuous Running mode — scrolling text that flows left → right without stopping
+- Per-slide value templates — mix static text with <value> placeholders
+- Color Intervals — dynamic text color based on numeric value ranges
+- Global render settings — shared style, size, colors, alignment across all slides
+- Plain Text render mode — in addition to Dot-Matrix and 7-Segment
+- Italic text support (Plain Text + 7-Segment)
+- Center text option
+- Improved Visual Editor — structured Slides list with Add / Move / Delete controls
+- Backwards compatibility — automatic migration from old single-entity YAML
+- 7-Segment letter support — displays C, F, L, I (e.g., °C / °F units)
+- Animations work even with a single slide
+- Improved color picker stability — no focus loss while editing
+- Enhanced editor layout — Slides list separated for better readability
+- More robust architecture — animation logic split into modular functions for future expansion
+
+
+
+
 
 Installation (HACS)
 1. Install the repository in HACS (Dashboard/Plugin).
@@ -133,4 +154,13 @@ matrix_gap: 2
 
 ```
 ## ☕ Support the project 
-[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=andybonde&button_colour=FFDD00&font_colour=000000&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/andybonde)
+I’m a Home Automation enthusiast who spends way too many late nights building custom cards, dashboards and small tools for Home Assistant.
+I love creating clean, useful UI components and sharing them for free with the community, and I try to help others whenever I can with ideas, code and support.
+If you enjoy my work or use any of my cards in your setup, your support means a lot and helps me keep experimenting, improving and maintaining everything.
+
+<a href="https://www.buymeacoffee.com/AndyBonde" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" 
+       alt="Buy Me A Coffee" 
+       style="height: 60px; width: 217px;">
+</a>
+
