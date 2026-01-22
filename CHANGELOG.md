@@ -1,6 +1,6 @@
 # Changelog
 
-"# 2.0 
+## v2.0 
 - Multi-entity support (Slides) — rotate between multiple entities instead of showing only one
 - Slide-based animation engine — configurable In / Stay / Out timing per slide
 - Multiple animation styles — Left, Right, Top, Bottom, Billboard, Matrix, and Running
