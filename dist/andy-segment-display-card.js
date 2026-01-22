@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v1.2.7
+ * v2.0
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,24 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog 
+ * 2.0 - 2026-01-22
+ * Multi-entity support (Slides): rotate between multiple entities instead of showing only one
+ * Slide-based animation engine: configurable In / Stay / Out timing per slide
+ * Multiple animation styles: Left, Right, Top, Bottom, Billboard, Matrix, and Running
+ * Continuous Running mode: scrolling text that flows left → right without stopping
+ * Per-slide value templates: mix static text with <value> placeholders
+ * Color Intervals: dynamic text color based on numeric value ranges
+ * Global render settings: shared style, size, colors, alignment across all slides
+ * Plain Text render mode: in addition to Dot-Matrix and 7-Segment
+ * Italic text support (Plain Text + 7-Segment)
+ * Center text option
+ * Improved Visual Editor: structured Slides list with Add / Move / Delete controls
+ * Backwards compatibility: automatic migration from old single-entity YAML
+ * 7-Segment letter support: displays C, F, L, I (e.g., °C / °F units)
+ * Animations work even with a single slide
+ * Improved color picker stability: no focus loss while editing
+ * Enhanced editor layout: Slides list separated for better readability
+ * More robust architecture: animation logic split into modular functions for future expansion
  *
  * 1.2.7 - 2026-01-10
  * FIX: Safe customElements.define (avoid duplicate define errors)
@@ -27,41 +45,70 @@
  * - Added Decimal management
  * - Added Leading Zero function if value is without leading zero it will be added
  */
+
 (() => {
-const CARD_TAG = "andy-segment-display-card";
-const EDITOR_TAG = "andy-segment-display-card-editor";
+  console.info("Andy Segment Display Card loaded: v2.0");
 
-const DEFAULTS = {
-  entity: "",
-  title: "",
-  size_px: 0,
+  const CARD_TAG = "andy-segment-display-card";
+  const EDITOR_TAG = `${CARD_TAG}-editor`;
 
-  text_color: "#00FF66",
-  background_color: "#0B0F0C",
+  // -------------------- Defaults --------------------
+  const DEFAULTS_GLOBAL = {
+    // Global render settings (apply to ALL slides)
+    render_style: "segment", // "segment" | "matrix" | "plain"
+    size_px: 0,              // 0 = auto
+    italic: false,           // segment/plain only (disabled for matrix)
+    center_text: false,      // center the display (otherwise right align like v1)
 
-  show_unused: true,
-  unused_color: "#2A2F2C",
+    show_title: true,
 
-  // Manual decimals (wins over auto_decimals)
-  decimals: null,
+    background_color: "#0B0F0C",
+    text_color: "#00FF66",
 
-  // Auto-limit decimals if sensor provides too many (null = disabled)
-  auto_decimals: null,
+    // Dot-matrix only
+    matrix_dot_off_color: "#221B1B",
 
-  // Add leading zero for values like .5 / -.5
-  leading_zero: true,
+    // Legacy support: if set (from old configs), overrides matrix dot-on color.
+    // v2 editor no longer exposes this; dot-on uses text_color / interval color.
+    matrix_dot_on_color: "",
 
-  show_unit: false,
-  max_chars: 10,
+    // 7-seg only
+    show_unused: true,
+    unused_color: "#2A2F2C",
 
-  render_style: "segment",
+    // sizing (auto aspect ratio uses this unless /* auto_max_chars removed in v2.0.19 */ = true)
+    max_chars: 10,
+    // Color intervals (optional)
+    color_intervals: [], // { from:number, to:number, color:"#RRGGBB" }
 
-  matrix_dot_off_color: "#1C211E",
-  matrix_dot_on_color: "", // empty => use text_color
-  matrix_cols: 5,
-  matrix_rows: 7,
-  matrix_gap: 2,
-};
+    // Dot-matrix geometry (kept for compatibility; not exposed in v2 editor)
+    matrix_cols: 5,
+    matrix_rows: 7,
+    matrix_gap: 2,
+  };
+
+  const DEFAULT_SLIDE = {
+    entity: "",
+    title: "",
+
+    // Numeric formatting
+    decimals: null,      // manual (wins over auto_decimals)
+    auto_decimals: null, // auto limit decimals
+    leading_zero: true,
+    show_unit: false,
+
+    // Text template (matrix/plain only): use "<value>" placeholder
+    value_template: "<value>",
+
+    // Slide switching
+    stay_s: 3,
+    out_s: 0.5,
+    in_s: 0.5,
+    fade: true,
+    show_style: "run_left", // run_left | run_right | run_top | run_bottom | billboard | matrix
+    hide_style: "run_right",
+    hide_prev_first: true,
+  };
 
 const SEGMENTS = {
   "0": [1,1,1,1,1,1,0],
@@ -76,9 +123,11 @@ const SEGMENTS = {
   "9": [1,1,1,1,0,1,1],
   "-": [0,0,0,0,0,0,1],
   " ": [0,0,0,0,0,0,0],
+  "C": [1,0,0,1,1,1,0],
+  "F": [1,0,0,0,1,1,1],
+  "L": [0,0,0,1,1,1,0],
+  "I": [0,1,1,0,0,0,0],
 };
-
-// 5x7 dot-matrix font (rows, each row is 5 bits)
 const FONT_5X7 = {
   " ": [0,0,0,0,0,0,0],
   "-": [0,0,0,31,0,0,0],
@@ -133,7 +182,6 @@ const FONT_5X7 = {
   "Æ": [14,17,17,31,17,17,17], // A-like
   "Ø": [14,17,17,17,17,17,14], // O-like
 };
-
 function clampInt(n, min, max) {
   const x = Number.isFinite(n) ? n : min;
   return Math.max(min, Math.min(max, x));
@@ -195,7 +243,7 @@ function toDisplayString(stateObj, cfg) {
 
   let s = String(raw);
 
-  // Segment mode: keep digits + dot + minus
+  // Segment mode: keep digits + dot + minus + a few letters (for units)
   if ((cfg.render_style || "segment") === "segment") {
     s = s
       .replace(",", ".")
@@ -203,6 +251,11 @@ function toDisplayString(stateObj, cfg) {
       .map((ch) => {
         if (ch >= "0" && ch <= "9") return ch;
         if (ch === "." || ch === "-") return ch;
+
+        const up = String(ch).toUpperCase();
+        if (up === "C" || up === "F" || up === "L" || up === "I") return up;
+
+        // Ignore other symbols in 7-seg mode (e.g. °)
         return " ";
       })
       .join("");
@@ -213,7 +266,6 @@ function toDisplayString(stateObj, cfg) {
   const max = clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40);
   return s.length > max ? s.slice(s.length - max) : s;
 }
-
 /* -------- 7-segment rendering -------- */
 function svgForSegmentChar(ch, cfg) {
   if (ch === ".") {
@@ -251,7 +303,6 @@ function svgForSegmentChar(ch, cfg) {
     </svg>
   `;
 }
-
 /* -------- 5x7 dot-matrix rendering -------- */
 function svgForMatrixChar(ch, cfg) {
   const cols = clampInt(cfg.matrix_cols ?? 5, 3, 8);
@@ -283,641 +334,1460 @@ function svgForMatrixChar(ch, cfg) {
   `;
 }
 
-class AndySegmentDisplayCard extends HTMLElement {
-  constructor() {
-    super();
-    this._uid = `asdc-${Math.random().toString(36).slice(2, 10)}`;
-    this._built = false;
-    this._els = null;
-    this._lastText = null;
-    this._raf = 0;    
+  // -------------------- Color interval helper --------------------
+  function pickIntervalColor(intervals, n) {
+    if (!Array.isArray(intervals) || intervals.length === 0) return null;
+    for (const it of intervals) {
+      const f = Number(it?.from);
+      const t = Number(it?.to);
+      if (!Number.isFinite(f) || !Number.isFinite(t)) continue;
+      const lo = Math.min(f, t);
+      const hi = Math.max(f, t);
+      if (n >= lo && n <= hi) {
+        const c = String(it?.color || "").trim();
+        if (/^#([0-9a-fA-F]{3}){1,2}$/.test(c)) return c.toUpperCase();
+      }
+    }
+    return null;
   }
 
-  static getConfigElement() {
-    return document.createElement(EDITOR_TAG);
+  function toNumberOrNull(stateObj) {
+    if (!stateObj) return null;
+    const raw = stateObj.state;
+    const n = Number(String(raw).replace(",", "."));
+    if (raw === "" || Number.isNaN(n) || !Number.isFinite(n)) return null;
+    return n;
   }
 
-  static getStubConfig() {
-    return { ...DEFAULTS };
+  // -------------------- Animation engine (generic) --------------------
+  // NOTE: Animations are implemented as CSS keyframes; easy to extend.
+  function animNameFor(style, phase) {
+    // phase: "in" | "out"
+    switch (style) {
+      case "running":   return phase === "in" ? "asdc-in-run-left"  : "asdc-out-run-right";
+      case "run_left":  return phase === "in" ? "asdc-in-run-left"  : "asdc-out-run-left";
+      case "run_right": return phase === "in" ? "asdc-in-run-right" : "asdc-out-run-right";
+      case "run_top":   return phase === "in" ? "asdc-in-run-top"   : "asdc-out-run-top";
+      case "run_bottom":return phase === "in" ? "asdc-in-run-bottom": "asdc-out-run-bottom";
+      case "billboard": return phase === "in" ? "asdc-in-billboard" : "asdc-out-billboard";
+      case "matrix":    return phase === "in" ? "asdc-in-matrix"    : "asdc-out-matrix";
+      default:          return phase === "in" ? "asdc-in-run-left"  : "asdc-out-run-right";
+    }
   }
 
-  setConfig(config) {
-    this._config = { ...DEFAULTS, ...(config || {}) };
-    if (!this._config.entity) throw new Error("Du måste ange en entity.");
-    this._render();
+  function applyAnim(el, style, phase, seconds, fade) {
+    if (!el) return;
+    const s = Math.max(0, Number(seconds) || 0);
+    if (s <= 0) {
+      el.style.animation = "";
+      el.classList.remove("asdc-anim");
+      return;
+    }
+
+    el.classList.add("asdc-anim");
+    el.style.setProperty("--asdc-anim-dur", `${s}s`);
+    el.style.setProperty("--asdc-anim-fade", fade ? "1" : "0");
+    el.style.animation = `${animNameFor(style, phase)} var(--asdc-anim-dur) ease-in-out both`;
   }
 
-  
-  set hass(hass) {
-  this._hass = hass;
-  this._scheduleRender();
-  }
-//  set hass(hass) {
-//    this._hass = hass;
-//    this._render();
-//  }
-
-  getCardSize() {
-    return 2;
+  function clearAnim(el) {
+    if (!el) return;
+    el.style.animation = "";
+    el.classList.remove("asdc-anim");
   }
 
-  _scheduleRender() {
-    if (this._raf) cancelAnimationFrame(this._raf);
-    this._raf = requestAnimationFrame(() => {
+  // -------------------- Config migration --------------------
+  function migrateConfig(config) {
+    const cfg = config || {};
+    const _type = cfg.type;
+
+    // If already v2-like
+    if (Array.isArray(cfg.slides)) {
+      const global = { ...DEFAULTS_GLOBAL, ...(cfg.global || cfg) };
+      global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
+      const slides = cfg.slides.length > 0 ? cfg.slides : [{ ...DEFAULT_SLIDE }];
+      return { ...(_type ? { type: _type } : {}), ...global, slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+    }
+
+    // v1 -> v2 migration
+    const global = { ...DEFAULTS_GLOBAL };
+
+    // Map old top-level fields to global
+    for (const k of Object.keys(DEFAULTS_GLOBAL)) {
+      if (typeof cfg[k] !== "undefined") global[k] = cfg[k];
+    }
+
+    // Build first slide from old single-entity config
+    const slide = { ...DEFAULT_SLIDE };
+    slide.entity = cfg.entity || "";
+    slide.title = cfg.title || "";
+    slide.decimals = (typeof cfg.decimals === "number") ? cfg.decimals : null;
+    slide.auto_decimals = (typeof cfg.auto_decimals === "number") ? cfg.auto_decimals : null;
+    slide.leading_zero = cfg.leading_zero !== false;
+    slide.show_unit = !!cfg.show_unit;
+
+    return { ...(_type ? { type: _type } : {}), ...global, slides: [slide] };
+  }
+
+  // -------------------- Card --------------------
+  class AndySegmentDisplayCard extends HTMLElement {
+    constructor() {
+      super();
+      this._uid = `asdc-${Math.random().toString(36).slice(2, 10)}`;
+      this._built = false;
+      this._els = null;
+      this._lastText = null;
       this._raf = 0;
+
+      this._slideIndex = 0;
+      this._timer = 0;
+      this._isSwitching = false;
+    }
+
+    static getConfigElement() {
+      return document.createElement(EDITOR_TAG);
+    }
+
+    static getStubConfig() {
+      return {
+        ...DEFAULTS_GLOBAL,
+        slides: [{ ...DEFAULT_SLIDE, title: "Slide 1" }],
+      };
+    }
+
+    setConfig(config) {
+      this._origType = config?.type || this._origType || undefined;
+      this._config = migrateConfig(config);
+      if (this._origType && !this._config.type) this._config.type = this._origType;
       this._render();
-    });
-  }
+      this._resetScheduler(true);
+    }
 
-  
-  _render() {
-  if (!this._config || !this._hass) return;
+    set hass(hass) {
+      this._hass = hass;
+      this._scheduleRender();
+    }
 
-  const cfg = this._config;
-  const stateObj = cfg.entity ? this._hass.states[cfg.entity] : null;
-  const text = toDisplayString(stateObj, cfg);
+    disconnectedCallback() {
+      this._clearTimer();
+    }
 
-  const sizePx = Number(cfg.size_px ?? 0);
-  const isAuto = !Number.isFinite(sizePx) || sizePx <= 0;
-  const style = cfg.render_style || "segment";
+    getCardSize() {
+      return 2;
+    }
 
-  // Build once
-  if (!this._built) {
-    this._built = true;
-
-    this.innerHTML = `
-      <div id="${this._uid}" class="asdc-root">
-        <ha-card class="asdc-card">
-          <div class="title"></div>
-          <div class="wrap">
-            <div class="display" role="img"></div>
-          </div>
-        </ha-card>
-
-        <style>
-          #${this._uid} .asdc-card {
-            overflow: hidden;
-          }
-          #${this._uid} .title{
-            padding: 10px 12px 0 12px;
-            font-size: 14px;
-            opacity: 0.85;
-            display: none;
-          }
-          #${this._uid} .wrap {
-            width: 100%;
-            padding: 10px 12px 12px 12px;
-            box-sizing: border-box;
-          }
-          #${this._uid} .display {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            gap: 6px;
-            width: 100%;
-          }
-          #${this._uid} .char {
-            height: 100%;
-            width: auto;
-            flex: 0 0 auto;
-          }
-          #${this._uid} .wrap.segment .char.dot { width: 26px; }
-
-          /* Segment mode */
-          #${this._uid} .wrap.segment .seg.on {
-            fill: var(--asdc-text-color);
-            filter: drop-shadow(0 0 6px rgba(0,0,0,0.35));
-          }
-          #${this._uid} .wrap.segment .seg.off {
-            fill: var(--asdc-unused-fill);
-          }
-
-          /* Matrix mode */
-          #${this._uid} .wrap.matrix .dot.on {
-            fill: var(--asdc-dot-on);
-            filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
-          }
-          #${this._uid} .wrap.matrix .dot.off {
-            fill: var(--asdc-dot-off);
-          }
-        </style>
-      </div>
-    `;
-
-    const root = this.querySelector(`#${this._uid}`);
-    this._els = {
-      card: root.querySelector("ha-card"),
-      title: root.querySelector(".title"),
-      wrap: root.querySelector(".wrap"),
-      display: root.querySelector(".display"),
-    };
-  }
-
-  // Update layout classes & sizing (no rebuild)
-  const maxChars = clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40);
-
-  this._els.wrap.className = `wrap ${isAuto ? "auto" : "fixed"} ${style}`;
-
-  if (isAuto) {
-    const ratio = (style === "segment") ? (maxChars / 2.2) : (maxChars / 2.8);
-    this._els.display.style.width = "100%";
-    this._els.display.style.height = "";
-    this._els.display.style.aspectRatio = `${ratio}`;
-  } else {
-    this._els.display.style.aspectRatio = "";
-    this._els.display.style.height = `${clampInt(sizePx, 18, 300)}px`;
-  }
-
-  // Title (no rebuild)
-  if (cfg.title) {
-    this._els.title.textContent = cfg.title;
-    this._els.title.style.display = "block";
-  } else {
-    this._els.title.textContent = "";
-    this._els.title.style.display = "none";
-  }
-
-  // Card background: default via --ha-card-background so card_mod can override
-  this._els.card.style.setProperty("--ha-card-background", cfg.background_color);
-
-  // Colors via CSS vars
-  const showUnused = !!cfg.show_unused;
-  const dotOn =
-    cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
-      ? cfg.matrix_dot_on_color
-      : cfg.text_color;
-
-  this._els.card.style.setProperty("--asdc-text-color", cfg.text_color);
-  this._els.card.style.setProperty("--asdc-dot-on", dotOn);
-  this._els.card.style.setProperty("--asdc-dot-off", cfg.matrix_dot_off_color);
-  this._els.card.style.setProperty("--asdc-unused-fill", showUnused ? cfg.unused_color : "transparent");
-
-  // Only update SVGs if text actually changed (prevents blink)
-  if (text !== this._lastText) {
-    this._lastText = text;
-
-    const chars = text
-      .split("")
-      .map((ch) => {
-        if (style === "segment") return svgForSegmentChar(ch, cfg);
-        return svgForMatrixChar(ch, cfg);
-      })
-      .join("");
-
-    this._els.display.innerHTML = chars;
-    this._els.display.setAttribute("aria-label", `${cfg.entity} value ${text}`);
-  }
-}
-
-  
-  _renderOld() {
-    if (!this._config || !this._hass) return;
-
-    const cfg = this._config;
-    const stateObj = cfg.entity ? this._hass.states[cfg.entity] : null;
-    const text = toDisplayString(stateObj, cfg);
-
-    const sizePx = Number(cfg.size_px ?? 0);
-    const isAuto = !Number.isFinite(sizePx) || sizePx <= 0;
-
-    const style = cfg.render_style || "segment";
-
-    const chars = text
-      .split("")
-      .map((ch) => {
-        if (style === "segment") return svgForSegmentChar(ch, cfg);
-        return svgForMatrixChar(ch, cfg);
-      })
-      .join("");
-
-    const showUnused = !!cfg.show_unused;
-
-    const titleHtml = cfg.title ? `<div class="title">${cfg.title}</div>` : "";
-
-    const dotOn =
-      cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
-        ? cfg.matrix_dot_on_color
-        : cfg.text_color;
-
-    this.innerHTML = `
-      <div id="${this._uid}" class="asdc-root">
-        <!-- v1.2.6: Use HA variable for default background (so card_mod can override background normally) -->
-        <ha-card class="asdc-card" style="--ha-card-background: ${cfg.background_color};">
-          ${titleHtml}
-          <div class="wrap ${isAuto ? "auto" : "fixed"} ${style}">
-            <div class="display" role="img" aria-label="${cfg.entity} value ${text}">
-              ${chars}
-            </div>
-          </div>
-        </ha-card>
-
-        <style>
-          #${this._uid} .asdc-card {
-            /* IMPORTANT:
-               Do NOT set background here.
-               card_mod must be able to override with: ha-card { background: ... } */
-            overflow: hidden;
-          }
-
-          #${this._uid} .title{
-            padding: 10px 12px 0 12px;
-            font-size: 14px;
-            opacity: 0.85;
-          }
-
-          #${this._uid} .wrap {
-            width: 100%;
-            padding: 10px 12px 12px 12px;
-            box-sizing: border-box;
-          }
-
-          #${this._uid} .wrap.auto.segment .display {
-            width: 100%;
-            aspect-ratio: ${clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40)} / 2.2;
-          }
-          #${this._uid} .wrap.auto.matrix .display {
-            width: 100%;
-            aspect-ratio: ${clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40)} / 2.8;
-          }
-
-          #${this._uid} .wrap.fixed .display {
-            height: ${clampInt(sizePx, 18, 300)}px;
-          }
-
-          #${this._uid} .display {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            gap: 6px;
-            width: 100%;
-          }
-
-          #${this._uid} .char {
-            height: 100%;
-            width: auto;
-            flex: 0 0 auto;
-          }
-
-          #${this._uid} .wrap.segment .char.dot { width: 26px; }
-
-          #${this._uid} .wrap.segment .seg.on {
-            fill: ${cfg.text_color};
-            filter: drop-shadow(0 0 6px rgba(0,0,0,0.35));
-          }
-          #${this._uid} .wrap.segment .seg.off {
-            fill: ${showUnused ? cfg.unused_color : "transparent"};
-          }
-
-          #${this._uid} .wrap.matrix .dot.on {
-            fill: ${dotOn};
-            filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
-          }
-          #${this._uid} .wrap.matrix .dot.off {
-            fill: ${cfg.matrix_dot_off_color};
-          }
-        </style>
-      </div>
-    `;
-  }
-}
-
-customElements.define(CARD_TAG, AndySegmentDisplayCard);
-
-/* -------- Editor (UI) -------- */
-class AndySegmentDisplayCardEditor extends HTMLElement {
-  setConfig(config) {
-    this._config = { ...DEFAULTS, ...(config || {}) };
-    this._buildOnce();
-    this._sync();
-  }
-
-  set hass(hass) {
-    this._hass = hass;
-    if (this._built) this._sync();
-  }
-
-  _buildOnce() {
-    if (this._built) return;
-    this._built = true;
-
-    const root = document.createElement("div");
-    root.className = "form";
-
-    const mkText = (label, key, type = "text", placeholder = "") => {
-      const tf = document.createElement("ha-textfield");
-      tf.label = label;
-      tf.type = type;
-      tf.placeholder = placeholder;
-      tf.configValue = key;
-
-      tf.addEventListener("input", (e) => this._onChange(e));
-      tf.addEventListener("change", (e) => this._onChange(e));
-      tf.addEventListener("value-changed", (e) => this._onChange(e));
-      return tf;
-    };
-
-    const mkSwitch = (label, key) => {
-      const ff = document.createElement("ha-formfield");
-      ff.label = label;
-      const sw = document.createElement("ha-switch");
-      sw.configValue = key;
-      sw.addEventListener("change", (e) => this._onChange(e));
-      sw.addEventListener("value-changed", (e) => this._onChange(e));
-      ff.appendChild(sw);
-      return { wrap: ff, sw };
-    };
-
-    const mkSection = (title) => {
-      const s = document.createElement("div");
-      s.className = "section";
-      const t = document.createElement("div");
-      t.className = "section-title";
-      t.innerText = title;
-      s.appendChild(t);
-      return s;
-    };
-
-    const normalizeHex = (v, allowEmpty) => {
-      const s = String(v || "").trim();
-      if (allowEmpty && s === "") return "";
-      if (!/^#([0-9a-fA-F]{3}){1,2}$/.test(s)) return null;
-      if (s.length === 4) {
-        const r = s[1], g = s[2], b = s[3];
-        return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
-      }
-      return s.toUpperCase();
-    };
-
-    const mkColor = (label, key, allowEmpty = false) => {
-      const row = document.createElement("div");
-      row.className = "colorRow";
-
-      const tf = document.createElement("ha-textfield");
-      tf.label = label;
-      tf.placeholder = allowEmpty ? "(empty = auto)" : "#RRGGBB";
-      tf.configValue = key;
-      tf.addEventListener("change", (e) => this._onChange(e));
-      tf.addEventListener("value-changed", (e) => this._onChange(e));
-
-      const btn = document.createElement("input");
-      btn.type = "color";
-      btn.className = "colorBtn";
-      btn.dataset.configValue = key;
-
-      btn.addEventListener("input", (e) => {
-        const val = String(e.target.value || "").toUpperCase();
-        tf.value = val;
-        this._commit(key, val);
-        this._sync();
+    _scheduleRender() {
+      if (this._raf) cancelAnimationFrame(this._raf);
+      this._raf = requestAnimationFrame(() => {
+        this._raf = 0;
+        this._render();
       });
+    }
 
-      row._tf = tf;
-      row._btn = btn;
-      row._allowEmpty = allowEmpty;
-      row._normalizeHex = normalizeHex;
+    _clearTimer() {
+      if (this._timer) {
+        clearTimeout(this._timer);
+        this._timer = 0;
+      }
+      this._isSwitching = false;
+    }
 
-      row.appendChild(tf);
-      row.appendChild(btn);
-      return row;
-    };
+    _resetScheduler(force) {
+      if (force) {
+        this._clearTimer();
+        this._slideIndex = 0;
+        this._startLoop();
+      } else {
+        this._startLoop();
+      }
+    }
 
-    const mkEntityControl = () => {
-      const hasSelector = !!customElements.get("ha-selector");
-      if (hasSelector) {
-        const sel = document.createElement("ha-selector");
-        sel.label = "Entity";
-        sel.configValue = "entity";
-        sel.selector = { entity: {} };
-        sel.addEventListener("value-changed", (e) => this._onChange(e));
-        this._entityIsSelector = true;
+    _startLoop() {
+      const cfg = this._config;
+      const slides = Array.isArray(cfg?.slides) ? cfg.slides : [];
+      if (!cfg || !slides || slides.length < 1) {
+        this._clearTimer();
+        return;
+      }
+      if (!this._timer && !this._isSwitching) {
+        const s = slides[this._slideIndex] || DEFAULT_SLIDE;
+        const stay = Math.max(0, Number(s.stay_s) || 0);
+        this._timer = setTimeout(() => this._nextSlide(), stay * 1000);
+      }
+    }
+
+    async _nextSlide() {
+      const cfg = this._config;
+      const slides = Array.isArray(cfg?.slides) ? cfg.slides : [];
+      if (!cfg || slides.length < 1 || !this._els) {
+        this._clearTimer();
+        return;
+      }
+      this._clearTimer();
+      this._isSwitching = true;
+
+      const current = slides[this._slideIndex] || DEFAULT_SLIDE;
+      const nextIndex = (this._slideIndex + 1) % slides.length;
+      const next = slides[nextIndex] || DEFAULT_SLIDE;
+
+      const outS = Math.max(0, Number(current.out_s) || 0);
+      const inS  = Math.max(0, Number(next.in_s) || 0);
+      const isRunning = (current.show_style === "running");
+      const isSingle = (slides.length === 1);
+      const runOut = (outS > 0) && (isRunning ? true : (isSingle ? true : !!current.hide_prev_first));
+
+      if (runOut) {
+        const outStyle = isRunning ? "running" : (isSingle ? current.hide_style : current.hide_style);
+        applyAnim(this._els.display, outStyle, "out", outS, !!current.fade);
+        await new Promise((res) => setTimeout(res, outS * 1000));
+        clearAnim(this._els.display);
+      }
+
+      this._slideIndex = nextIndex;
+      this._lastText = null;
+      this._render();
+
+      if (inS > 0) {
+        applyAnim(this._els.display, next.show_style, "in", inS, !!next.fade);
+        await new Promise((res) => setTimeout(res, inS * 1000));
+        clearAnim(this._els.display);
+      }
+
+      this._isSwitching = false;
+
+      const stay = Math.max(0, Number(next.stay_s) || 0);
+      this._timer = setTimeout(() => this._nextSlide(), stay * 1000);
+    }
+
+    _effectiveMaxChars(renderedText) {
+      const cfg = this._config;
+      return clampInt(cfg.max_chars ?? DEFAULTS_GLOBAL.max_chars, 1, 40);
+    }
+
+    _computeActiveTextColor(stateObj) {
+      const cfg = this._config;
+      const n = toNumberOrNull(stateObj);
+      const intervalColor = (n === null) ? null : pickIntervalColor(cfg.color_intervals, n);
+      return (intervalColor || cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
+    }
+
+    _render() {
+      if (!this._config) return;
+
+      const cfg = this._config;
+      const slides = Array.isArray(cfg.slides) ? cfg.slides : [{ ...DEFAULT_SLIDE }];
+      const slide = slides[this._slideIndex] || slides[0] || DEFAULT_SLIDE;
+
+      const stateObj = (this._hass && slide.entity) ? this._hass.states[slide.entity] : null;
+
+      const mergedForValue = {
+        ...DEFAULTS_GLOBAL,
+        ...cfg,
+        ...DEFAULT_SLIDE,
+        ...slide,
+        render_style: cfg.render_style,
+        max_chars: 999, // no truncation here
+      };
+
+      let valueStr = toDisplayString(stateObj, mergedForValue);
+
+      let displayStr = valueStr;
+      if ((cfg.render_style || "segment") !== "segment") {
+        const tpl = String(slide.value_template || "<value>");
+        if (tpl.includes("<value>")) displayStr = tpl.replaceAll("<value>", valueStr);
+        else displayStr = tpl + valueStr;
+
+        if ((cfg.render_style || "matrix") === "matrix") {
+          displayStr = normalizeForMatrix(displayStr);
+        }
+      }
+
+      const effMax = this._effectiveMaxChars(displayStr);
+      if (displayStr.length > effMax) displayStr = displayStr.slice(displayStr.length - effMax);
+
+      const sizePx = Number(cfg.size_px ?? 0);
+      const isAuto = !Number.isFinite(sizePx) || sizePx <= 0;
+      const style = cfg.render_style || "segment"; // segment|matrix|plain
+
+      if (!this._built) {
+        this._built = true;
+
+        this.innerHTML = `
+          <div id="${this._uid}" class="asdc-root">
+            <ha-card class="asdc-card">
+              <div class="title"></div>
+              <div class="wrap">
+                <div class="display" role="img"></div>
+              </div>
+            </ha-card>
+
+            <style>
+              #${this._uid} .asdc-card {
+                overflow: hidden;
+              }
+              #${this._uid} .title{
+                padding: 10px 12px 0 12px;
+                font-size: 14px;
+                opacity: 0.85;
+                display: none;
+              }
+              #${this._uid} .wrap {
+                width: 100%;
+                padding: 10px 12px 12px 12px;
+                box-sizing: border-box;
+              }
+              #${this._uid} .display {
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 6px;
+                width: 100%;
+                transform-origin: center;
+              }
+              #${this._uid} .char {
+                height: 100%;
+                width: auto;
+                flex: 0 0 auto;
+              }
+              #${this._uid} .wrap.segment .char.dot { width: 26px; }
+
+              /* Segment mode (kept from v1) */
+              #${this._uid} .wrap.segment .seg.on {
+                fill: var(--asdc-text-color);
+                filter: drop-shadow(0 0 6px rgba(0,0,0,0.35));
+              }
+              #${this._uid} .wrap.segment .seg.off {
+                fill: var(--asdc-unused-fill);
+              }
+
+              /* Matrix mode (kept from v1) */
+              #${this._uid} .wrap.matrix .dot.on {
+                fill: var(--asdc-dot-on);
+                filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
+              }
+              #${this._uid} .wrap.matrix .dot.off {
+                fill: var(--asdc-dot-off);
+              }
+
+              /* Plain text mode */
+              #${this._uid} .wrap.plain .plainText {
+                width: 100%;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: clip;
+                line-height: 1;
+                letter-spacing: 0.5px;
+                color: var(--asdc-text-color);
+                filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
+                display: flex;
+                align-items: center;
+                justify-content: inherit;
+              }
+
+              /* Optional: italic (segment/plain) */
+              #${this._uid} .display.asdc-italic {
+                transform: skewX(-10deg);
+              }
+              #${this._uid} .wrap.plain .plainText.asdc-italic {
+                font-style: italic;
+                transform: none;
+              }
+
+              /* Animation base */
+              #${this._uid} .display.asdc-anim {
+                will-change: transform, opacity, filter;
+              }
+
+              /* Keyframes */
+              @keyframes asdc-in-run-left {
+                0% { transform: translateX(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+                100% { transform: translateX(0); opacity: 1; }
+              }
+              @keyframes asdc-out-run-left {
+                0% { transform: translateX(0); opacity: 1; }
+                100% { transform: translateX(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+              }
+              @keyframes asdc-in-run-right {
+                0% { transform: translateX(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+                100% { transform: translateX(0); opacity: 1; }
+              }
+              @keyframes asdc-out-run-right {
+                0% { transform: translateX(0); opacity: 1; }
+                100% { transform: translateX(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+              }
+              
+              @keyframes asdc-in-run-top {
+                0% { transform: translateY(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+                100% { transform: translateY(0); opacity: 1; }
+              }
+              @keyframes asdc-out-run-top {
+                0% { transform: translateY(0); opacity: 1; }
+                100% { transform: translateY(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+              }
+              @keyframes asdc-in-run-bottom {
+                0% { transform: translateY(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+                100% { transform: translateY(0); opacity: 1; }
+              }
+              @keyframes asdc-out-run-bottom {
+                0% { transform: translateY(0); opacity: 1; }
+                100% { transform: translateY(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
+              }
+@keyframes asdc-in-billboard {
+                0% { transform: perspective(600px) rotateX(75deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
+                100% { transform: perspective(600px) rotateX(0deg); opacity: 1; filter: blur(0px); }
+              }
+              @keyframes asdc-out-billboard {
+                0% { transform: perspective(600px) rotateX(0deg); opacity: 1; filter: blur(0px); }
+                100% { transform: perspective(600px) rotateX(-75deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
+              }
+              @keyframes asdc-in-matrix {
+                0% { transform: translateY(-10%) skewX(-8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
+                100% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0px); }
+              }
+              @keyframes asdc-out-matrix {
+                0% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0px); }
+                100% { transform: translateY(10%) skewX(8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
+              }
+            </style>
+          </div>
+        `;
+
+        const root = this.querySelector(`#${this._uid}`);
+        this._els = {
+          card: root.querySelector("ha-card"),
+          title: root.querySelector(".title"),
+          wrap: root.querySelector(".wrap"),
+          display: root.querySelector(".display"),
+        };
+      }
+
+      // Alignment
+      this._els.display.style.justifyContent = cfg.center_text ? "center" : "flex-end";
+
+      // Italic toggle
+      const italicAllowed = (style !== "matrix") && !!cfg.italic;
+      this._els.display.classList.toggle("asdc-italic", italicAllowed);
+
+      // Update layout classes & sizing (no rebuild)
+      this._els.wrap.className = `wrap ${isAuto ? "auto" : "fixed"} ${style}`;
+
+      const maxChars = this._effectiveMaxChars(displayStr);
+
+      if (isAuto) {
+        const ratio =
+          (style === "segment") ? (maxChars / 2.2) :
+          (style === "matrix")  ? (maxChars / 2.8) :
+          (maxChars / 1.6); // plain
+        this._els.display.style.width = "100%";
+        this._els.display.style.height = "";
+        this._els.display.style.aspectRatio = `${ratio}`;
+      } else {
+        this._els.display.style.aspectRatio = "";
+        this._els.display.style.height = `${clampInt(sizePx, 18, 300)}px`;
+      }
+
+      // Title
+      const titleText = (cfg.show_title !== false) ? (slide.title || "") : "";
+      if (titleText) {
+        this._els.title.textContent = titleText;
+        this._els.title.style.display = "block";
+      } else {
+        this._els.title.textContent = "";
+        this._els.title.style.display = "none";
+      }
+
+      // Card background (card_mod friendly)
+      this._els.card.style.setProperty("--ha-card-background", cfg.background_color);
+
+      // Active text color (interval override)
+      const activeTextColor = this._computeActiveTextColor(stateObj);
+
+      // Dot-matrix Dot ON color:
+      // - In v2, intervals should override ALL render styles.
+      // - For backwards compatibility, if no interval matches (activeTextColor == base text_color),
+      //   we fall back to legacy matrix_dot_on_color (if provided).
+      const baseTextColor = (cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
+      const dotOnLegacy =
+        cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
+          ? String(cfg.matrix_dot_on_color).trim().toUpperCase()
+          : "";
+
+      const dotOn = (activeTextColor !== baseTextColor) ? activeTextColor : (dotOnLegacy || activeTextColor);
+
+      const showUnused = !!cfg.show_unused;
+      this._els.card.style.setProperty("--asdc-text-color", activeTextColor);
+      this._els.card.style.setProperty("--asdc-dot-on", dotOn);
+      this._els.card.style.setProperty("--asdc-dot-off", (cfg.matrix_dot_off_color || DEFAULTS_GLOBAL.matrix_dot_off_color).toUpperCase());
+      this._els.card.style.setProperty("--asdc-unused-fill", showUnused ? (cfg.unused_color || DEFAULTS_GLOBAL.unused_color).toUpperCase() : "transparent");
+
+      if (displayStr !== this._lastText) {
+        this._lastText = displayStr;
+
+        if (style === "plain") {
+          this._els.display.innerHTML = `<div class="plainText ${italicAllowed ? "asdc-italic" : ""}">${displayStr}</div>`;
+          this._els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
+
+          requestAnimationFrame(() => {
+            const pt = this._els.display.querySelector(".plainText");
+            if (!pt) return;
+
+            // Respect manual size if provided
+            const manual = Number(cfg.size_px) || 0;
+            if (manual > 0) {
+              pt.style.fontSize = `${manual}px`;
+            } else {
+              // Autosize based on the wrapper height (not affected by in/out animations on the display element)
+              const wrapBox = this._els.wrap?.getBoundingClientRect?.() || this._els.display.getBoundingClientRect();
+              const fs = Math.max(12, Math.min(180, wrapBox.height * 0.85));
+              pt.style.fontSize = `${fs}px`;
+            }
+
+            pt.style.justifyContent = cfg.center_text ? "center" : "flex-end";
+          });
+          return;
+        }
+
+        const chars = displayStr
+          .split("")
+          .map((ch) => {
+            if (style === "segment") return svgForSegmentChar(ch, cfg);
+            return svgForMatrixChar(ch, cfg);
+          })
+          .join("");
+
+        this._els.display.innerHTML = chars;
+        this._els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
+      }
+
+      this._startLoop();
+    }
+  }
+
+  // Safe define
+  if (!customElements.get(CARD_TAG)) {
+    customElements.define(CARD_TAG, AndySegmentDisplayCard);
+  }
+
+  // -------------------- Editor (UI) --------------------
+  class AndySegmentDisplayCardEditor extends HTMLElement {
+    setConfig(config) {
+      this._config = migrateConfig(config);
+      this._buildOnce();
+      this._sync();
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      if (this._built) {
+        try {
+          if (this._slideEntity) this._slideEntity.hass = hass;
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    _buildOnce() {
+      if (this._built) return;
+      this._built = true;
+
+      const root = document.createElement("div");
+      root.className = "form";
+
+      const mkText = (label, key, type = "text", placeholder = "") => {
+        const tf = document.createElement("ha-textfield");
+        tf.label = label;
+        tf.type = type;
+        tf.placeholder = placeholder;
+        tf.configValue = key;
+
+        tf.addEventListener("input", (e) => this._onChange(e));
+        tf.addEventListener("change", (e) => this._onChange(e));
+        tf.addEventListener("value-changed", (e) => this._onChange(e));
+        return tf;
+      };
+
+      const mkSwitch = (label, key) => {
+        const ff = document.createElement("ha-formfield");
+        ff.label = label;
+        const sw = document.createElement("ha-switch");
+        sw.configValue = key;
+        sw.addEventListener("change", (e) => this._onChange(e));
+        sw.addEventListener("value-changed", (e) => this._onChange(e));
+        ff.appendChild(sw);
+        return { wrap: ff, sw };
+      };
+
+      const mkSection = (title) => {
+        const s = document.createElement("div");
+        s.className = "section";
+        const t = document.createElement("div");
+        t.className = "section-title";
+        t.innerText = title;
+        s.appendChild(t);
+        return s;
+      };
+
+      const normalizeHex = (v, allowEmpty) => {
+        const s = String(v || "").trim();
+        if (allowEmpty && s === "") return "";
+        if (!/^#([0-9a-fA-F]{3}){1,2}$/.test(s)) return null;
+        if (s.length === 4) {
+          const r = s[1], g = s[2], b = s[3];
+          return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+        }
+        return s.toUpperCase();
+      };
+
+      const mkColor = (label, key, allowEmpty = false) => {
+        const row = document.createElement("div");
+        row.className = "colorRow";
+
+        const tf = document.createElement("ha-textfield");
+        tf.label = label;
+        tf.placeholder = allowEmpty ? "(empty = auto)" : "#RRGGBB";
+        tf.configValue = key;
+        tf.addEventListener("change", (e) => this._onChange(e));
+        tf.addEventListener("value-changed", (e) => this._onChange(e));
+
+        const btn = document.createElement("input");
+        btn.type = "color";
+        btn.className = "colorBtn";
+        btn.dataset.configValue = key;
+
+        btn.addEventListener("input", (e) => {
+          const val = String(e.target.value || "").toUpperCase();
+          tf.value = val;
+        });
+
+        btn.addEventListener("change", (e) => {
+          const val = String(e.target.value || "").toUpperCase();
+          tf.value = val;
+          this._commit(key, val);
+        });
+
+row._tf = tf;
+        row._btn = btn;
+        row._allowEmpty = allowEmpty;
+        row._normalizeHex = normalizeHex;
+
+        row.appendChild(tf);
+        row.appendChild(btn);
+        return row;
+      };
+
+      const mkEntityControl = (key) => {
+        const hasSelector = !!customElements.get("ha-selector");
+        if (hasSelector) {
+          const sel = document.createElement("ha-selector");
+          sel.label = "Entity";
+          sel.configValue = key;
+          sel.selector = { entity: {} };
+          sel.addEventListener("value-changed", (e) => this._onChange(e));
+          return sel;
+        }
+        const ep = document.createElement("ha-entity-picker");
+        ep.label = "Entity";
+        ep.allowCustomEntity = true;
+        ep.configValue = key;
+        ep.addEventListener("value-changed", (e) => this._onChange(e));
+        return ep;
+      };
+
+      const mkSelect = (label, key, options) => {
+        const sel = document.createElement("ha-select");
+        sel.label = label;
+        sel.configValue = key;
+
+        options.forEach(([value, text]) => {
+          const item = document.createElement("mwc-list-item");
+          item.value = value;
+          item.innerText = text;
+          sel.appendChild(item);
+        });
+
+        const stop = (e) => e.stopPropagation();
+        sel.addEventListener("click", stop);
+        sel.addEventListener("opened", stop);
+        sel.addEventListener("closed", stop);
+        sel.addEventListener("keydown", stop);
+
+        sel.addEventListener("value-changed", (e) => {
+          e.stopPropagation();
+          this._onChange(e);
+        });
+
+        sel.addEventListener("selected", (e) => {
+          e.stopPropagation();
+          // Some HA builds only emit "selected" for ha-select; ensure we persist.
+          this._onChange({ target: sel, detail: { value: sel.value } });
+        });
+
         return sel;
+      };
+
+      const mkButton = (text, onClick) => {
+        const tag = customElements.get("ha-button") ? "ha-button" : "mwc-button";
+        const b = document.createElement(tag);
+
+        // Prefer attribute + textContent to support different HA/MWC builds
+        b.setAttribute("raised", "");
+        b.classList.add("asdcBtn");
+        b.setAttribute("label", text);
+        b.textContent = text; // fallback rendering
+
+        b.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick();
+        });
+        return b;
+      };
+
+      // ---------- Global ----------
+      const secGlobal = mkSection("Global settings");
+
+      this._elRenderStyle = mkSelect("Render style (global)", "render_style", [
+        ["segment", "7-segment (digits)"],
+        ["matrix", "Dot-matrix (text)"],
+        ["plain", "Plain text"],
+      ]);
+      secGlobal.appendChild(this._elRenderStyle);
+
+      this._elSize = mkText("Size (px) — 0 = Auto", "size_px", "number");
+      secGlobal.appendChild(this._elSize);
+
+      const { wrap: italWrap, sw: italSw } = mkSwitch("Italic (segment/plain)", "italic");
+      this._elItalic = italSw;
+      secGlobal.appendChild(italWrap);
+
+      const { wrap: centerWrap, sw: centerSw } = mkSwitch("Center text", "center_text");
+      this._elCenter = centerSw;
+      secGlobal.appendChild(centerWrap);
+
+      const { wrap: stWrap, sw: stSw } = mkSwitch("Show title", "show_title");
+      this._elShowTitle = stSw;
+      secGlobal.appendChild(stWrap);
+
+      this._rowText = mkColor("Text color", "text_color");
+      secGlobal.appendChild(this._rowText);
+
+      this._rowBg = mkColor("Background color", "background_color");
+      secGlobal.appendChild(this._rowBg);
+
+      const maxRow = document.createElement("div");
+      maxRow.className = "twoCols";
+      this._elMaxChars = mkText("Max chars", "max_chars", "number");
+      maxRow.appendChild(this._elMaxChars);
+            secGlobal.appendChild(maxRow);
+
+      root.appendChild(secGlobal);
+
+      // ---------- 7-segment options ----------
+      const secSeg = mkSection("7-segment options");
+      const { wrap: unusedWrap, sw: unusedSw } = mkSwitch("Show unused segments (faint)", "show_unused");
+      this._elShowUnused = unusedSw;
+      secSeg.appendChild(unusedWrap);
+      this._rowUnused = mkColor("Unused segments color", "unused_color");
+      secSeg.appendChild(this._rowUnused);
+      root.appendChild(secSeg);
+
+      // ---------- Dot-matrix options ----------
+      const secMat = mkSection("Dot-matrix options");
+      this._rowDotOff = mkColor("Dot OFF color", "matrix_dot_off_color");
+      secMat.appendChild(this._rowDotOff);
+      root.appendChild(secMat);
+
+      // ---------- Color intervals ----------
+      const secIntervals = mkSection("Color intervals");
+      const intervalHeader = document.createElement("div");
+      intervalHeader.className = "rowHeader";
+      const h = document.createElement("div");
+      h.innerText = "Intervals";
+      intervalHeader.appendChild(h);
+
+      const intervalBtns = document.createElement("div");
+      intervalBtns.className = "btnRow";
+      intervalBtns.appendChild(mkButton("Add", () => this._addInterval()));
+      intervalHeader.appendChild(intervalBtns);
+
+      secIntervals.appendChild(intervalHeader);
+
+      this._intervalList = document.createElement("div");
+      this._intervalList.className = "intervalList";
+      secIntervals.appendChild(this._intervalList);
+      root.appendChild(secIntervals);
+
+      // ---------- Slides ----------
+      const secSlides = mkSection("Slides");
+      const slidesHeader = document.createElement("div");
+      slidesHeader.className = "rowHeader";
+      const sh = document.createElement("div");
+      sh.innerText = "Slides";
+      slidesHeader.appendChild(sh);
+
+      this._btnAddSlide = mkButton("Add", () => this._addSlide());
+      this._btnUpSlide  = mkButton("Move up", () => this._moveSlide(-1));
+      this._btnDownSlide= mkButton("Move down", () => this._moveSlide(1));
+      this._btnDelSlide = mkButton("Delete", () => this._deleteSlide());
+
+      const slideBtns = document.createElement("div");
+      slideBtns.className = "btnRow";
+      slideBtns.appendChild(this._btnAddSlide);
+      slideBtns.appendChild(this._btnUpSlide);
+      slideBtns.appendChild(this._btnDownSlide);
+      slideBtns.appendChild(this._btnDelSlide);
+      slidesHeader.appendChild(slideBtns);
+
+      secSlides.appendChild(slidesHeader);
+
+      const body = document.createElement("div");
+      body.className = "slidesBody";
+
+      this._slidesList = document.createElement("div");
+      this._slidesList.className = "slidesList";
+      body.appendChild(this._slidesList);
+
+      this._slideEditor = document.createElement("div");
+      this._slideEditor.className = "slideEditor";
+      body.appendChild(this._slideEditor);
+
+      secSlides.appendChild(body);
+      root.appendChild(secSlides);
+
+      // Slide editor fields
+      this._slideEntity = mkEntityControl("__slide_entity");
+      this._slideEditor.appendChild(this._slideEntity);
+
+      this._slideTitle = mkText("Title (required)", "__slide_title");
+      this._slideEditor.appendChild(this._slideTitle);
+
+      const secNum = mkSection("Numeric formatting (slide)");
+      this._slideDecimals = mkText("Decimals (manual) (empty = keep original)", "__slide_decimals", "number", "");
+      secNum.appendChild(this._slideDecimals);
+
+      this._slideAutoDecimals = mkText("Auto limit decimals (empty = disabled)", "__slide_auto_decimals", "number", "");
+      secNum.appendChild(this._slideAutoDecimals);
+
+      const { wrap: lzWrap, sw: lzSw } = mkSwitch("Leading zero (e.g. .5 → 0.5)", "__slide_leading_zero");
+      this._slideLeadingZero = lzSw;
+      secNum.appendChild(lzWrap);
+
+      const { wrap: unitWrap, sw: unitSw } = mkSwitch("Show unit (e.g. °C)", "__slide_show_unit");
+      this._slideShowUnit = unitSw;
+      secNum.appendChild(unitWrap);
+
+      this._slideEditor.appendChild(secNum);
+
+      const secTextTpl = mkSection("Value / text (slide)");
+      this._slideTpl = mkText("Value template (use <value>)", "__slide_value_template", "text", "<value>");
+      secTextTpl.appendChild(this._slideTpl);
+      this._slideEditor.appendChild(secTextTpl);
+
+      const secSwitch = mkSection("Slide switch settings");
+      this._slideStay = mkText("Stay seconds", "__slide_stay_s", "number", "3");
+      secSwitch.appendChild(this._slideStay);
+      this._slideOut = mkText("Out seconds", "__slide_out_s", "number", "0.5");
+      secSwitch.appendChild(this._slideOut);
+      this._slideIn = mkText("In seconds", "__slide_in_s", "number", "0.5");
+      secSwitch.appendChild(this._slideIn);
+
+      const { wrap: fadeWrap, sw: fadeSw } = mkSwitch("Fade toggle", "__slide_fade");
+      this._slideFade = fadeSw;
+      secSwitch.appendChild(fadeWrap);
+
+      this._slideShowStyle = mkSelect("Show style", "__slide_show_style", [
+        ["running", "Running"],
+        ["run_left", "Left"],
+        ["run_top", "Top"],
+        ["run_right", "Right"],
+        ["run_bottom", "Bottom"],
+        ["billboard", "Billboard"],
+        ["matrix", "Matrix"],
+      ]);
+      secSwitch.appendChild(this._slideShowStyle);
+
+      this._slideHideStyle = mkSelect("Hide style", "__slide_hide_style", [
+        ["run_left", "Left"],
+        ["run_top", "Top"],
+        ["run_right", "Right"],
+        ["run_bottom", "Bottom"],
+        ["billboard", "Billboard"],
+        ["matrix", "Matrix"],
+      ]);
+      this._hideStyleWrap = document.createElement("div");
+      this._hideStyleWrap.appendChild(this._slideHideStyle);
+      secSwitch.appendChild(this._hideStyleWrap);
+
+      const { wrap: hpWrap, sw: hpSw } = mkSwitch("Hide previous slide first", "__slide_hide_prev_first");
+      this._slideHidePrevFirst = hpSw;
+      this._hidePrevWrap = hpWrap;
+      secSwitch.appendChild(hpWrap);
+
+      this._slideEditor.appendChild(secSwitch);
+
+      const style = document.createElement("style");
+      style.textContent = `
+        .form { display:flex; flex-direction:column; gap:12px; padding:8px 0; }
+        mwc-button.asdcBtn{
+          --mdc-theme-primary: var(--primary-color, #03A9F4);
+          --mdc-theme-on-primary: #FFFFFF;
+        }
+        mwc-button.asdcBtn[disabled]{
+          opacity: .55;
+        }
+
+        .section { border-top:1px solid rgba(0,0,0,0.10); padding-top:10px; margin-top:6px; display:flex; flex-direction:column; gap:10px; }
+        .section-title { font-size:12px; opacity:.75; letter-spacing:.2px; }
+
+        .colorRow { display:flex; align-items:flex-end; gap:10px; }
+        .colorRow ha-textfield { flex: 1 1 auto; }
+
+        .colorBtn{
+          width: 44px;
+          height: 38px;
+          padding: 0;
+          border: 1px solid rgba(0,0,0,0.25);
+          border-radius: 6px;
+          background: transparent;
+          cursor: pointer;
+        }
+
+        .rowHeader{
+          display:flex;
+          align-items:center;
+          gap:10px;
+          flex-wrap:wrap;
+        }
+        .btnRow{
+          display:flex;
+          gap:8px;
+          flex-wrap:wrap;
+          margin-left:auto;
+        }
+        .rowHeader > div:first-child{
+          font-size: 13px;
+          opacity: .85;
+          padding: 4px 0;
+        }
+
+        .twoCols{
+          display:grid;
+          grid-template-columns: 1fr auto;
+          gap: 10px;
+          align-items:end;
+        }
+        .twoCols ha-formfield{
+          padding-bottom: 8px;
+        }
+
+        .intervalList{
+          display:flex;
+          flex-direction:column;
+          gap:8px;
+        }
+        .intervalRow{
+          display:grid;
+          grid-template-columns: 1fr 1fr 1.2fr auto;
+          gap:10px;
+          align-items:end;
+        }
+        .intervalRow mwc-icon-button{
+          margin-bottom: 6px;
+        }
+
+        .slidesBody{
+          display:flex;
+          flex-direction:column;
+          gap: 12px;
+          align-items:stretch;
+        }
+        .slidesList{
+          border: 1px solid rgba(0,0,0,0.12);
+          border-radius: 10px;
+          overflow:auto;
+          max-height: 240px;
+        }
+        .slideItem{
+          padding: 10px 12px;
+          cursor:pointer;
+          user-select:none;
+          border-bottom: 1px solid rgba(0,0,0,0.08);
+          font-size: 13px;
+          opacity: .9;
+          display:flex;
+          justify-content:space-between;
+          gap:8px;
+        }
+        .slideItem:last-child{ border-bottom:none; }
+        .slideItem.active{
+          background: rgba(3, 169, 244, 0.12);
+          opacity: 1;
+        }
+        .slideItem small{
+          opacity:.65;
+        }
+        .slideEditor{
+          display:flex;
+          flex-direction:column;
+          gap:10px;
+        }
+        @media (max-width: 900px){
+          .slidesBody{ grid-template-columns: 1fr; }
+        }
+      `;
+
+      this.innerHTML = "";
+      this.appendChild(style);
+      this.appendChild(root);
+    }
+
+    _syncColor(row, value) {
+      const allowEmpty = !!row._allowEmpty;
+      const norm = row._normalizeHex(value, allowEmpty);
+      const v = norm === null ? (allowEmpty ? "" : "#000000") : norm;
+
+      row._tf.value = v;
+      row._btn.value = v && v !== "" ? v : "#000000";
+      row._btn.style.opacity = (v && v !== "") ? "1" : "0.35";
+    }
+
+    _sync() {
+      if (!this._config) return;
+
+      // Global
+      this._elRenderStyle.value = this._config.render_style || "segment";
+      this._elSize.value = String(this._config.size_px ?? 0);
+
+      this._elItalic.checked = !!this._config.italic;
+      this._elCenter.checked = !!this._config.center_text;
+
+      this._elShowTitle.checked = (this._config.show_title !== false);
+
+      const isMatrix = (this._config.render_style === "matrix");
+      this._elItalic.disabled = isMatrix;
+
+      this._elMaxChars.value = String(this._config.max_chars ?? DEFAULTS_GLOBAL.max_chars);
+
+      this._elShowUnused.checked = !!this._config.show_unused;
+
+      this._syncColor(this._rowText, this._config.text_color);
+      this._syncColor(this._rowBg, this._config.background_color);
+      this._syncColor(this._rowUnused, this._config.unused_color);
+      this._syncColor(this._rowDotOff, this._config.matrix_dot_off_color);
+
+      // Show/hide sections based on style
+      const st = this._config.render_style || "segment";
+      this._elShowUnused.closest(".section").style.display = (st === "segment") ? "flex" : "none";
+      this._rowDotOff.closest(".section").style.display = (st === "matrix") ? "flex" : "none";
+
+      // Intervals + Slides
+      this._renderIntervals();
+
+      if (!Array.isArray(this._config.slides) || this._config.slides.length === 0) {
+        this._config.slides = [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
       }
-      const ep = document.createElement("ha-entity-picker");
-      ep.label = "Entity";
-      ep.allowCustomEntity = true;
-      ep.configValue = "entity";
-      ep.addEventListener("value-changed", (e) => this._onChange(e));
-      this._entityIsSelector = false;
-      return ep;
-    };
+      if (typeof this._activeSlide !== "number") this._activeSlide = 0;
+      this._activeSlide = clampInt(this._activeSlide, 0, this._config.slides.length - 1);
 
-    const mkSelect = (label, key, options) => {
-      const sel = document.createElement("ha-select");
-      sel.label = label;
-      sel.configValue = key;
+      this._renderSlidesList();
+      this._syncSlideEditor();
+      this._syncSlideButtons();
+    }
 
-      options.forEach(([value, text]) => {
-        const item = document.createElement("mwc-list-item");
-        item.value = value;
-        item.innerText = text;
-        sel.appendChild(item);
+    _syncSlideButtons() {
+      const n = (this._config.slides || []).length;
+      const i = this._activeSlide || 0;
+      this._btnUpSlide.disabled = (i <= 0);
+      this._btnDownSlide.disabled = (i >= n - 1);
+      this._btnDelSlide.disabled = (n <= 1);
+    }
+
+    _renderSlidesList() {
+      this._slidesList.innerHTML = "";
+      (this._config.slides || []).forEach((s, idx) => {
+        const item = document.createElement("div");
+        item.className = `slideItem ${idx === this._activeSlide ? "active" : ""}`;
+        const title = (s.title && String(s.title).trim()) ? String(s.title).trim() : `Slide ${idx + 1}`;
+        const ent = s.entity ? String(s.entity) : "";
+        item.innerHTML = `<div>${title}<br><small>${ent}</small></div><div>›</div>`;
+        item.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this._activeSlide = idx;
+          this._sync();
+        });
+        this._slidesList.appendChild(item);
       });
+    }
 
-      const stop = (e) => e.stopPropagation();
-      sel.addEventListener("click", stop);
-      sel.addEventListener("opened", stop);
-      sel.addEventListener("closed", stop);
-      sel.addEventListener("keydown", stop);
+    _renderIntervals() {
+      const list = this._intervalList;
+      list.innerHTML = "";
+      const intervals = Array.isArray(this._config.color_intervals) ? this._config.color_intervals : [];
+      intervals.forEach((it, idx) => {
+        const row = document.createElement("div");
+        row.className = "intervalRow";
 
-      sel.addEventListener("value-changed", (e) => {
-        e.stopPropagation();
-        this._onChange(e);
+        const from = document.createElement("ha-textfield");
+        from.label = "Value from";
+        from.type = "number";
+        from.value = (typeof it.from === "number" || typeof it.from === "string") ? String(it.from) : "";
+        from.dataset.intervalIndex = String(idx);
+        from.dataset.intervalKey = "from";
+        from.addEventListener("change", (e) => this._onIntervalChange(e));
+        from.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+
+        const to = document.createElement("ha-textfield");
+        to.label = "To";
+        to.type = "number";
+        to.value = (typeof it.to === "number" || typeof it.to === "string") ? String(it.to) : "";
+        to.dataset.intervalIndex = String(idx);
+        to.dataset.intervalKey = "to";
+        to.addEventListener("change", (e) => this._onIntervalChange(e));
+        to.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+
+        const colorRow = document.createElement("div");
+        colorRow.className = "colorRow";
+        const tf = document.createElement("ha-textfield");
+        tf.label = "Color";
+        tf.value = String(it.color || this._config.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
+        tf.dataset.intervalIndex = String(idx);
+        tf.dataset.intervalKey = "color";
+        tf.addEventListener("change", (e) => this._onIntervalChange(e));
+        tf.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+
+        const btn = document.createElement("input");
+        btn.type = "color";
+        btn.className = "colorBtn";
+        btn.value = (tf.value && /^#/.test(tf.value)) ? tf.value : "#000000";
+        btn.addEventListener("input", (e) => {
+          const v = String(e.target.value || "").toUpperCase();
+          tf.value = v;
+          // no commit while picker is open
+        });
+        btn.addEventListener("change", (e) => {
+          const v = String(e.target.value || "").toUpperCase();
+          tf.value = v;
+          this._setIntervalValue(idx, "color", v, /*noSync*/ true);
+        });
+        colorRow.appendChild(tf);
+        colorRow.appendChild(btn);
+
+        const delTag = customElements.get("ha-button") ? "ha-button" : "mwc-button";
+        const del = document.createElement(delTag);
+        del.setAttribute("raised","");
+        del.classList.add("asdcBtn");
+        del.setAttribute("label","Delete");
+        del.textContent = "Delete";
+        del.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this._deleteInterval(idx);
+        });
+
+        row.appendChild(from);
+        row.appendChild(to);
+        row.appendChild(colorRow);
+        row.appendChild(del);
+
+        list.appendChild(row);
       });
+    }
 
-      sel.addEventListener("selected", (e) => {
-        e.stopPropagation();
-        if (sel.value) this._commit(key, sel.value);
-      });
+    _syncSlideEditor() {
+      const slides = this._config.slides || [];
+      const s = slides[this._activeSlide] || { ...DEFAULT_SLIDE };
 
-      return sel;
-    };
-
-    // ---------- UI ----------
-    this._elEntity = mkEntityControl();
-    root.appendChild(this._elEntity);
-
-    this._elTitle = mkText("Title (optional)", "title");
-    root.appendChild(this._elTitle);
-
-    this._elRenderStyle = mkSelect("Render style", "render_style", [
-      ["segment", "7-segment (digits)"],
-      ["matrix", "Dot-matrix (text)"],
-    ]);
-    root.appendChild(this._elRenderStyle);
-
-    this._elSize = mkText("Size (px) — 0 = Auto", "size_px", "number");
-    root.appendChild(this._elSize);
-
-    this._rowText = mkColor("Text color", "text_color");
-    root.appendChild(this._rowText);
-
-    this._rowBg = mkColor("Background color", "background_color");
-    root.appendChild(this._rowBg);
-
-    this._elMaxChars = mkText("Max chars", "max_chars", "number");
-    root.appendChild(this._elMaxChars);
-
-    const secNum = mkSection("Numeric formatting");
-
-    // Manual decimals
-    this._elDecimals = mkText("Decimals (manual) (empty = keep original)", "decimals", "number", "");
-    secNum.appendChild(this._elDecimals);
-
-    // Auto decimals
-    this._elAutoDecimals = mkText("Auto limit decimals (empty = disabled)", "auto_decimals", "number", "");
-    secNum.appendChild(this._elAutoDecimals);
-
-    // Leading zero
-    const { wrap: lzWrap, sw: lzSw } = mkSwitch("Leading zero (e.g. .5 → 0.5)", "leading_zero");
-    this._elLeadingZero = lzSw;
-    secNum.appendChild(lzWrap);
-
-    const { wrap: unitWrap, sw: unitSw } = mkSwitch("Show unit (e.g. °C)", "show_unit");
-    this._elShowUnit = unitSw;
-    secNum.appendChild(unitWrap);
-
-    root.appendChild(secNum);
-
-    const secSeg = mkSection("7-segment options");
-    const { wrap: unusedWrap, sw: unusedSw } = mkSwitch("Show unused segments (faint)", "show_unused");
-    this._elShowUnused = unusedSw;
-    secSeg.appendChild(unusedWrap);
-    this._rowUnused = mkColor("Unused segments color", "unused_color");
-    secSeg.appendChild(this._rowUnused);
-    root.appendChild(secSeg);
-
-    const secMat = mkSection("Dot-matrix options");
-    this._rowDotOff = mkColor("Dot OFF color", "matrix_dot_off_color");
-    secMat.appendChild(this._rowDotOff);
-    this._rowDotOn = mkColor("Dot ON color (empty = use Text color)", "matrix_dot_on_color", true);
-    secMat.appendChild(this._rowDotOn);
-    root.appendChild(secMat);
-
-    const style = document.createElement("style");
-    style.textContent = `
-      .form { display:flex; flex-direction:column; gap:12px; padding:8px 0; }
-      .section { border-top:1px solid rgba(0,0,0,0.10); padding-top:10px; margin-top:6px; display:flex; flex-direction:column; gap:10px; }
-      .section-title { font-size:12px; opacity:.75; letter-spacing:.2px; }
-
-      .colorRow { display:flex; align-items:flex-end; gap:10px; }
-      .colorRow ha-textfield { flex: 1 1 auto; }
-
-      .colorBtn{
-        width: 44px;
-        height: 38px;
-        padding: 0;
-        border: 1px solid rgba(0,0,0,0.25);
-        border-radius: 6px;
-        background: transparent;
-        cursor: pointer;
+      if (this._hass) {
+        this._slideEntity.hass = this._hass;
       }
-    `;
+      this._slideEntity.value = s.entity || "";
 
-    this.innerHTML = "";
-    this.appendChild(style);
-    this.appendChild(root);
-  }
+      this._slideTitle.value = s.title || "";
 
-  _syncColor(row, value) {
-    const allowEmpty = !!row._allowEmpty;
-    const norm = row._normalizeHex(value, allowEmpty);
-    const v = norm === null ? (allowEmpty ? "" : "#000000") : norm;
+      this._slideDecimals.value = (s.decimals === null || s.decimals === undefined) ? "" : String(s.decimals);
+      this._slideAutoDecimals.value = (s.auto_decimals === null || s.auto_decimals === undefined) ? "" : String(s.auto_decimals);
 
-    row._tf.value = v;
-    row._btn.value = v && v !== "" ? v : "#000000";
-    row._btn.style.opacity = (v && v !== "") ? "1" : "0.35";
-  }
+      this._slideLeadingZero.checked = s.leading_zero !== false;
+      this._slideShowUnit.checked = !!s.show_unit;
 
-  _sync() {
-    if (!this._hass || !this._config) return;
+      this._slideTpl.value = s.value_template || "<value>";
 
-    this._elEntity.hass = this._hass;
-    this._elEntity.value = this._config.entity || "";
+      this._slideStay.value = String(s.stay_s ?? DEFAULT_SLIDE.stay_s);
+      this._slideOut.value  = String(s.out_s ?? DEFAULT_SLIDE.out_s);
+      this._slideIn.value   = String(s.in_s ?? DEFAULT_SLIDE.in_s);
 
-    this._elTitle.value = this._config.title || "";
-    this._elSize.value = String(this._config.size_px ?? 0);
-    this._elMaxChars.value = String(this._config.max_chars ?? DEFAULTS.max_chars);
+      this._slideFade.checked = !!s.fade;
+      this._slideShowStyle.value = s.show_style || DEFAULT_SLIDE.show_style;
+      this._slideHideStyle.value = s.hide_style || DEFAULT_SLIDE.hide_style;
 
-    this._elRenderStyle.value = this._config.render_style || "segment";
+      const isRunning = (this._slideShowStyle.value === "running");
+      if (isRunning) {
+        this._slideHideStyle.value = "run_right";
+        if (this._hideStyleWrap) this._hideStyleWrap.style.display = "none";
+        if (this._hidePrevWrap) this._hidePrevWrap.style.display = "none";
+      } else {
+        if (this._hideStyleWrap) this._hideStyleWrap.style.display = "";
+        if (this._hidePrevWrap) this._hidePrevWrap.style.display = "";
+      }
+      this._slideHidePrevFirst.checked = !!s.hide_prev_first;
 
-    this._elShowUnit.checked = !!this._config.show_unit;
-    this._elShowUnused.checked = !!this._config.show_unused;
+      const st = this._config.render_style || "segment";
+      const tplDisabled = (st === "segment");
+      this._slideTpl.disabled = tplDisabled;
+      this._slideTpl.label = tplDisabled ? "Value template (not used in 7-segment)" : "Value template (use <value>)";
+    }
 
-    this._elLeadingZero.checked = this._config.leading_zero !== false;
+    _commit(key, value) {
+      const next = { ...(this._config || DEFAULTS_GLOBAL), ...(this._origType ? { type: this._origType } : {}), [key]: value };
+      next.slides = this._config.slides || [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+      next.color_intervals = this._config.color_intervals || [];
+      this._config = next;
 
-    this._elDecimals.value =
-      this._config.decimals === null || this._config.decimals === undefined ? "" : String(this._config.decimals);
-
-    this._elAutoDecimals.value =
-      this._config.auto_decimals === null || this._config.auto_decimals === undefined ? "" : String(this._config.auto_decimals);
-
-    this._syncColor(this._rowText, this._config.text_color);
-    this._syncColor(this._rowBg, this._config.background_color);
-    this._syncColor(this._rowUnused, this._config.unused_color);
-    this._syncColor(this._rowDotOff, this._config.matrix_dot_off_color);
-    this._syncColor(this._rowDotOn, this._config.matrix_dot_on_color || "");
-  }
-
-  _commit(key, value) {
-    const next = { ...(this._config || DEFAULTS), [key]: value };
-    this._config = next;
-
-    this.dispatchEvent(
-      new CustomEvent("config-changed", {
+      this.dispatchEvent(new CustomEvent("config-changed", {
         detail: { config: next },
         bubbles: true,
         composed: true,
-      })
-    );
-  }
-
-  _eventValue(ev, target) {
-    if (ev && ev.detail && typeof ev.detail.value !== "undefined") return ev.detail.value;
-    return target.value;
-  }
-
-  _onChange(ev) {
-    const target = ev.target;
-    const key = target.configValue || target.dataset?.configValue;
-    if (!key) return;
-
-    if (typeof target.checked !== "undefined") {
-      return this._commit(key, target.checked);
+      }));
     }
 
-    let value = this._eventValue(ev, target);
-
-    if (key === "size_px" || key === "max_chars") {
-      value = value === "" ? 0 : Number(value);
-      return this._commit(key, value);
+    _commitFull(nextConfig) {
+      if (this._origType && !nextConfig.type) nextConfig.type = this._origType;
+      this._config = nextConfig;
+      this.dispatchEvent(new CustomEvent("config-changed", {
+        detail: { config: nextConfig },
+        bubbles: true,
+        composed: true,
+      }));
     }
 
-    if (key === "decimals" || key === "auto_decimals") {
-      value = value === "" ? null : Number(value);
-      if (!Number.isFinite(value)) value = null;
-      return this._commit(key, value);
+    _eventValue(ev, target) {
+      if (ev && ev.detail && typeof ev.detail.value !== "undefined") return ev.detail.value;
+      return target.value;
     }
 
-    if (key === "entity" || key === "render_style" || key === "title") {
-      return this._commit(key, value);
+    _onChange(ev) {
+      const target = ev.target;
+      const key = target.configValue || target.dataset?.configValue;
+      if (!key) return;
+
+      if (typeof target.checked !== "undefined") {
+        if (key === "italic" || key === "center_text" || key === "show_unused" || key === "show_title") {
+          return this._commit(key, !!target.checked);
+        }
+      }
+
+      let value = this._eventValue(ev, target);
+
+      if (key === "size_px" || key === "max_chars") {
+        value = value === "" ? 0 : Number(value);
+        if (!Number.isFinite(value)) value = 0;
+        return this._commit(key, value);
+      }
+
+      if (key === "render_style") {
+        this._commit(key, value);
+        this._sync();
+        return;
+      }
+
+      if (key === "text_color" || key === "background_color" || key === "unused_color" || key === "matrix_dot_off_color") {
+        const norm = this._rowText._normalizeHex(value, false);
+        if (norm === null) {
+          this._sync();
+          return;
+        }
+        return this._commit(key, norm);
+      }
+
+      if (key.startsWith("__slide_")) {
+        return this._onSlideChange(key, ev);
+      }
     }
 
-    const allowEmpty = (key === "matrix_dot_on_color");
-    const norm = (this._rowText._normalizeHex)(value, allowEmpty);
-    if (norm === null) {
+    _slideCommitField(field, newValue) {
+      const next = { ...this._config };
+      const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      const idx = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+      slides[idx] = { ...slides[idx], [field]: newValue };
+      next.slides = slides;
+      this._commitFull(next);
       this._sync();
-      return;
     }
-    return this._commit(key, norm);
+
+    _onSlideChange(key, ev) {
+      const target = ev.target;
+      let v = this._eventValue(ev, target);
+
+      if (key === "__slide_entity") {
+        this._slideCommitField("entity", v || "");
+
+        const slides = this._config.slides || [];
+        const idx = this._activeSlide || 0;
+        const s = slides[idx] || {};
+        const titleNow = String(s.title || "").trim();
+        if (!titleNow) {
+          const friendly = this._hass?.states?.[v]?.attributes?.friendly_name;
+          const autoTitle = friendly || (v ? String(v).split(".").slice(1).join(".").replaceAll("_"," ") : `Slide ${idx+1}`);
+          this._slideCommitField("title", autoTitle);
+        }
+        return;
+      }
+
+      if (key === "__slide_title") {
+        this._slideCommitField("title", String(v || ""));
+        return;
+      }
+
+      if (key === "__slide_decimals" || key === "__slide_auto_decimals") {
+        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
+        const val = Number.isFinite(num) ? num : null;
+        this._slideCommitField(key === "__slide_decimals" ? "decimals" : "auto_decimals", val);
+        return;
+      }
+
+      if (key === "__slide_leading_zero" || key === "__slide_show_unit" || key === "__slide_fade" || key === "__slide_hide_prev_first") {
+        const checked = !!target.checked;
+        const field =
+          (key === "__slide_leading_zero") ? "leading_zero" :
+          (key === "__slide_show_unit") ? "show_unit" :
+          (key === "__slide_fade") ? "fade" :
+          "hide_prev_first";
+        this._slideCommitField(field, checked);
+        return;
+      }
+
+      if (key === "__slide_stay_s" || key === "__slide_out_s" || key === "__slide_in_s") {
+        const num = Number(v);
+        const val = Number.isFinite(num) ? num : 0;
+        const field = (key === "__slide_stay_s") ? "stay_s" : (key === "__slide_out_s") ? "out_s" : "in_s";
+        this._slideCommitField(field, val);
+        return;
+      }
+
+      if (key === "__slide_value_template") {
+        this._slideCommitField("value_template", String(v || "<value>"));
+        return;
+      }
+
+      if (key === "__slide_show_style" || key === "__slide_hide_style") {
+        const field = (key === "__slide_show_style") ? "show_style" : "hide_style";
+        this._slideCommitField(field, String(v || ""));
+        return;
+      }
+    }
+
+    _addSlide() {
+      const next = { ...this._config };
+      const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+
+      const base = slides.length > 0 ? slides[slides.length - 1] : { ...DEFAULT_SLIDE };
+      const s = { ...DEFAULT_SLIDE, ...base };
+      s.entity = "";
+      s.title = `Slide ${slides.length + 1}`;
+
+      slides.push(s);
+      next.slides = slides;
+      this._activeSlide = slides.length - 1;
+      this._commitFull(next);
+      this._sync();
+    }
+
+    _moveSlide(dir) {
+      const next = { ...this._config };
+      const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      const i = this._activeSlide || 0;
+      const j = i + dir;
+      if (j < 0 || j >= slides.length) return;
+      const tmp = slides[i];
+      slides[i] = slides[j];
+      slides[j] = tmp;
+      next.slides = slides;
+      this._activeSlide = j;
+      this._commitFull(next);
+      this._sync();
+    }
+
+    _deleteSlide() {
+      const next = { ...this._config };
+      const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      if (slides.length <= 1) return;
+      const i = this._activeSlide || 0;
+      slides.splice(i, 1);
+      next.slides = slides;
+      this._activeSlide = clampInt(i, 0, slides.length - 1);
+      this._commitFull(next);
+      this._sync();
+    }
+
+    _addInterval() {
+      const next = { ...this._config };
+      const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+      ints.push({ from: 0, to: 0, color: (next.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase() });
+      next.color_intervals = ints;
+      this._commitFull(next);
+      this._sync();
+    }
+
+    _deleteInterval(idx) {
+      const next = { ...this._config };
+      const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+      ints.splice(idx, 1);
+      next.color_intervals = ints;
+      this._commitFull(next);
+      this._sync();
+    }
+
+    _setIntervalValue(idx, key, value, noSync) {
+      const next = { ...this._config };
+      const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+      const it = { ...(ints[idx] || {}) };
+
+      if (key === "from" || key === "to") {
+        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
+        it[key] = Number.isFinite(num) ? num : 0;
+      } else if (key === "color") {
+        const s = String(value || "").trim();
+        if (/^#([0-9a-fA-F]{3}){1,2}$/.test(s)) it.color = s.toUpperCase();
+      }
+      ints[idx] = it;
+      next.color_intervals = ints;
+      this._commitFull(next);
+      if (!noSync) this._sync();
+        }
+
+    _onIntervalChange(ev) {
+      const t = ev.target;
+      const idx = Number(t.dataset.intervalIndex);
+      const key = t.dataset.intervalKey;
+      const val = this._eventValue(ev, t);
+      this._setIntervalValue(idx, key, val, /*noSync*/ true);
+    }
   }
-}
 
-customElements.define(EDITOR_TAG, AndySegmentDisplayCardEditor);
 
-window.customCards = window.customCards || [];
-window.customCards.push({
-  type: CARD_TAG,
-  name: "Andy Segment Display Card",
-  description: "7-segment (digits) or 5x7 dot-matrix (text) display for an entity value.",
-});
+  if (!customElements.get(EDITOR_TAG)) {
+    customElements.define(EDITOR_TAG, AndySegmentDisplayCardEditor);
+  }
+
+  try {
+    if (String(CARD_TAG).endsWith("-development")) {
+      const base = String(CARD_TAG).replace(/-development$/,"");
+      const alias = `${base}-editor-development`;
+      if (alias !== EDITOR_TAG && !customElements.get(alias)) {
+        class AndySegmentDisplayCardEditorAlias extends AndySegmentDisplayCardEditor {}
+        customElements.define(alias, AndySegmentDisplayCardEditorAlias);
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: CARD_TAG,
+    name: "Andy Segment Display Card",
+    description: "7-segment (digits), dot-matrix (text) or plain text display for multiple entities (Slides).",
+  });
 })();
