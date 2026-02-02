@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.1
+ * v2.0.2
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,12 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog 
+ * 2.0.2 - 2026-02-01
+ * FIX: Title now remains visible in Home Assistant Light Mode (respects card background).
+ * UI: Added Variables reference + Support section at bottom of the Visual Editor.
+ * UI: Added global 'Title color' field (empty = theme-aware).
+ * NEW: value_template & Title now supports the full variable set as well.
+ *
  * 2.0.1 - 2026-01-22
  * Multi-entity support (Slides): rotate between multiple entities instead of showing only one
  * Slide-based animation engine: configurable In / Stay / Out timing per slide
@@ -47,10 +53,28 @@
  */
 
 (() => {
-  console.info("Andy Segment Display Card loaded: v2.0.1");
-
+  
+  const CARD_VERSION = "2.0.2";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
+  const CARD_NAME = "Andy Segment Displaycard Card";
+  const CARD_TAGLINE = `${CARD_NAME} v${CARD_VERSION}`;
+  
+console.info(
+  `%c${CARD_TAGLINE}`,
+  [
+    "background: rgba(255,152,0,0.95)",
+    "color: #fff",
+    "padding: 4px 10px",
+    "border-radius: 10px",
+    "font-weight: 800",
+    "letter-spacing: 0.2px",
+    "border: 1px solid rgba(0,0,0,0.25)",
+    "box-shadow: 0 1px 0 rgba(0,0,0,0.15)"
+  ].join(";")
+);  
+  
+
 
   // -------------------- Defaults --------------------
   const DEFAULTS_GLOBAL = {
@@ -64,6 +88,7 @@
 
     background_color: "#0B0F0C",
     text_color: "#00FF66",
+  title_color: "",
 
     // Dot-matrix only
     matrix_dot_off_color: "#221B1B",
@@ -76,7 +101,7 @@
     show_unused: true,
     unused_color: "#2A2F2C",
 
-    // sizing (auto aspect ratio uses this unless /* auto_max_chars removed in v2.0.23 */ = true)
+    // sizing (auto aspect ratio uses this unless /* auto_max_chars removed in v2.0.83 */ = true)
     max_chars: 10,
     // Color intervals (optional)
     color_intervals: [], // { from:number, to:number, color:"#RRGGBB" }
@@ -196,6 +221,47 @@ function normalizeForMatrix(s) {
     .replaceAll("æ", "Æ")
     .replaceAll("ø", "Ø")
     .toUpperCase();
+}
+
+
+function formatTimeLocal(ts) {
+  try { return new Date(ts).toLocaleString(); } catch (e) { return ""; }
+}
+function formatTimeISO(ts) {
+  try { return new Date(ts).toISOString(); } catch (e) { return ""; }
+}
+function formatRel(ts) {
+  try {
+    const d = new Date(ts).getTime();
+    if (!Number.isFinite(d)) return "";
+    const diff = Date.now() - d;
+    const sec = Math.round(diff / 1000);
+    const abs = Math.abs(sec);
+    const s = abs < 60 ? `${abs}s` :
+              abs < 3600 ? `${Math.round(abs/60)}m` :
+              abs < 86400 ? `${Math.round(abs/3600)}h` :
+              `${Math.round(abs/86400)}d`;
+    return sec >= 0 ? `${s} ago` : `in ${s}`;
+  } catch (e) { return ""; }
+}
+function applyTemplate(tpl, vars) {
+  const t = String(tpl ?? "<value>");
+  return t.replace(/<attr:([^>]+)>/g, (_, k) => {
+    const key = String(k || "").trim();
+    const v = vars?.attr?.[key];
+    return (v === undefined || v === null) ? "" : String(v);
+  }).replaceAll("<value>", String(vars.value ?? ""))
+    .replaceAll("<state>", String(vars.state ?? ""))
+    .replaceAll("<name>", String(vars.name ?? ""))
+    .replaceAll("<unit>", String(vars.unit ?? ""))
+    .replaceAll("<entity_id>", String(vars.entity_id ?? ""))
+    .replaceAll("<domain>", String(vars.domain ?? ""))
+    .replaceAll("<last_changed>", String(vars.last_changed ?? ""))
+    .replaceAll("<last_updated>", String(vars.last_updated ?? ""))
+    .replaceAll("<last_changed_rel>", String(vars.last_changed_rel ?? ""))
+    .replaceAll("<last_updated_rel>", String(vars.last_updated_rel ?? ""))
+    .replaceAll("<last_changed_iso>", String(vars.last_changed_iso ?? ""))
+    .replaceAll("<last_updated_iso>", String(vars.last_updated_iso ?? ""));
 }
 
 function toDisplayString(stateObj, cfg) {
@@ -603,11 +669,31 @@ function svgForMatrixChar(ch, cfg) {
 
       let valueStr = toDisplayString(stateObj, mergedForValue);
 
+      const vars = {
+        value: valueStr,
+        state: stateObj?.state ?? "",
+        name: stateObj?.attributes?.friendly_name ?? slide.title ?? "",
+        unit: stateObj?.attributes?.unit_of_measurement ?? "",
+        entity_id: slide.entity ?? "",
+        domain: (slide.entity || "").split(".")[0] || "",
+        last_changed: formatTimeLocal(stateObj?.last_changed),
+        last_updated: formatTimeLocal(stateObj?.last_updated),
+        last_changed_rel: formatRel(stateObj?.last_changed),
+        last_updated_rel: formatRel(stateObj?.last_updated),
+        last_changed_iso: formatTimeISO(stateObj?.last_changed),
+        last_updated_iso: formatTimeISO(stateObj?.last_updated),
+        attr: stateObj?.attributes || {},
+      };
+
       let displayStr = valueStr;
       if ((cfg.render_style || "segment") !== "segment") {
         const tpl = String(slide.value_template || "<value>");
-        if (tpl.includes("<value>")) displayStr = tpl.replaceAll("<value>", valueStr);
-        else displayStr = tpl + valueStr;
+        if (tpl.includes("<")) {
+          displayStr = applyTemplate(tpl, vars);
+        } else {
+          // legacy: if no placeholders are used, append the value
+          displayStr = tpl + valueStr;
+        }
 
         if ((cfg.render_style || "matrix") === "matrix") {
           displayStr = normalizeForMatrix(displayStr);
@@ -641,6 +727,7 @@ function svgForMatrixChar(ch, cfg) {
                 padding: 10px 12px 0 12px;
                 font-size: 14px;
                 opacity: 0.85;
+                color: var(--asdc-title-color, var(--primary-text-color));
                 display: none;
               }
               #${this._uid} .wrap {
@@ -799,8 +886,11 @@ function svgForMatrixChar(ch, cfg) {
       }
 
       // Title
-      const titleText = (cfg.show_title !== false) ? (slide.title || "") : "";
+      let titleText = (cfg.show_title !== false) ? (slide.title || "") : "";
       if (titleText) {
+        if (String(titleText).includes("<")) {
+          titleText = applyTemplate(titleText, vars);
+        }
         this._els.title.textContent = titleText;
         this._els.title.style.display = "block";
       } else {
@@ -828,6 +918,11 @@ function svgForMatrixChar(ch, cfg) {
 
       const showUnused = !!cfg.show_unused;
       this._els.card.style.setProperty("--asdc-text-color", activeTextColor);
+      if (cfg.title_color) {
+        this._els.card.style.setProperty("--asdc-title-color", cfg.title_color);
+      } else {
+        this._els.card.style.removeProperty("--asdc-title-color");
+      }
       this._els.card.style.setProperty("--asdc-dot-on", dotOn);
       this._els.card.style.setProperty("--asdc-dot-off", (cfg.matrix_dot_off_color || DEFAULTS_GLOBAL.matrix_dot_off_color).toUpperCase());
       this._els.card.style.setProperty("--asdc-unused-fill", showUnused ? (cfg.unused_color || DEFAULTS_GLOBAL.unused_color).toUpperCase() : "transparent");
@@ -1059,6 +1154,12 @@ row._tf = tf;
         return b;
       };
 
+      
+       const cardTitle = document.createElement("div");
+       cardTitle.className = "section-title badgesHeader";
+       cardTitle.innerText = CARD_TAGLINE;
+       root.appendChild(cardTitle);
+      
       // ---------- Global ----------
       const secGlobal = mkSection("Global settings");
 
@@ -1086,6 +1187,9 @@ row._tf = tf;
 
       this._rowText = mkColor("Text color", "text_color");
       secGlobal.appendChild(this._rowText);
+
+      this._rowTitle = mkColor("Title color", "title_color", true);
+      secGlobal.appendChild(this._rowTitle);
 
       this._rowBg = mkColor("Background color", "background_color");
       secGlobal.appendChild(this._rowBg);
@@ -1169,6 +1273,51 @@ row._tf = tf;
 
       secSlides.appendChild(body);
       root.appendChild(secSlides);
+
+      // ---------- Variables + Support ----------
+      const secSupport = mkSection("Variables & Support");
+
+      const varsHead = document.createElement("div");
+      varsHead.className = "badgeVarsHelp";
+
+      const varRow = [
+        `<code>&lt;value&gt;</code> formatted value (incl. unit)`,
+        `<code>&lt;state&gt;</code> raw state`,
+        `<code>&lt;name&gt;</code> friendly name`,
+        `<code>&lt;unit&gt;</code> unit`,
+        `<code>&lt;entity_id&gt;</code> entity id`,
+        `<code>&lt;domain&gt;</code> entity domain`,
+        `<code>&lt;last_changed&gt;</code> local time`,
+        `<code>&lt;last_updated&gt;</code> local time`,
+        `<code>&lt;last_changed_rel&gt;</code> relative time`,
+        `<code>&lt;last_updated_rel&gt;</code> relative time`,
+        `<code>&lt;last_changed_iso&gt;</code> ISO time`,
+        `<code>&lt;last_updated_iso&gt;</code> ISO time`,
+        `<code>&lt;attr:xxx&gt;</code> any attribute, e.g. <code>&lt;attr:temperature&gt;</code>`
+      ].join("<br/>");
+
+      varsHead.innerHTML = `
+        <div class="badgeVarsTitle">Variables you can use in templates, with or without your own text</div>
+        <div class="badgeVarsList">${varRow}</div>
+        <div class="badgeVarsExample"><b>Example:</b> Temperature: <code>&lt;value&gt;</code></div>
+
+        <div class="badgeSupport">
+          <div class="badgeSupportTitle">☕ Support the project</div>
+          <div class="badgeSupportText">
+            I’m a Home Automation enthusiast who spends late nights building custom cards and tools for Home Assistant.
+            If you enjoy my work or use any of my cards, your support helps me keep improving and maintaining everything.
+          </div>
+
+          <div class="badgeSupportActions">
+            <a class="badgeSupportImgLink" href="https://www.buymeacoffee.com/AndyBonde" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee">
+              <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" width="140" alt="Buy me a coffee">
+            </a>
+          </div>
+        </div>
+      `;
+
+      secSupport.appendChild(varsHead);
+      root.appendChild(secSupport);
 
       // Slide editor fields
       this._slideEntity = mkEntityControl("__slide_entity");
@@ -1258,7 +1407,18 @@ row._tf = tf;
         }
 
         .section { border-top:1px solid rgba(0,0,0,0.10); padding-top:10px; margin-top:6px; display:flex; flex-direction:column; gap:10px; }
-        .section-title { font-size:12px; opacity:.75; letter-spacing:.2px; }
+        .section-title-old { font-size:12px; opacity:.75; letter-spacing:.2px; }
+        
+        .section-title{
+         background: color-mix(in srgb, var(--warning-color, #ff9800) 22%, transparent);
+         padding: 8px 10px;
+         border-radius: 12px;
+         border: 1px solid color-mix(in srgb, var(--warning-color, #ff9800) 55%, transparent);
+         font-weight: 800;
+         opacity: 0.98;
+         color: var(--primary-text-color);
+        }
+        
 
         .colorRow { display:flex; align-items:flex-end; gap:10px; }
         .colorRow ha-textfield { flex: 1 1 auto; }
@@ -1355,6 +1515,80 @@ row._tf = tf;
         @media (max-width: 900px){
           .slidesBody{ grid-template-columns: 1fr; }
         }
+
+        .badgeVarsHelp{
+          margin-top: 6px;
+          padding: 10px 10px;
+          border-radius: 12px;
+          border: 1px solid rgba(0,0,0,0.12);
+          background: rgba(0,0,0,0.03);
+        }
+        .badgeVarsTitle{
+          font-weight: 800;
+          margin-bottom: 6px;
+        }
+        .badgeVarsList{
+          line-height: 1.35;
+          font-size: 0.92em;
+          opacity: 0.92;
+        }
+        .badgeVarsList code{
+          background: rgba(0,0,0,0.06);
+          padding: 1px 4px;
+          border-radius: 6px;
+        }
+        .badgeVarsExample{
+          margin-top: 10px;
+          font-size: 0.92em;
+          opacity: 0.95;
+        }
+
+        .badgeSupport{
+          margin-top: 12px;
+          padding: 10px 10px;
+          border-radius: 12px;
+          border: 1px solid rgba(0,0,0,0.12);
+          background: rgba(0,0,0,0.03);
+        }
+        .badgeSupportTitle{
+          font-weight: 800;
+          margin-bottom: 6px;
+        }
+        .badgeSupportText{
+          opacity: 0.9;
+          line-height: 1.35;
+          font-size: 0.92em;
+          margin-bottom: 10px;
+        }
+        .badgeSupportActions{
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          flex-wrap: wrap;
+        }
+        .badgeSupportLink{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          height: 32px;
+          padding: 0 12px;
+          border-radius: 10px;
+          font-weight: 800;
+          text-decoration: none;
+
+          background: var(--primary-color);
+          color: #fff;
+          border: 1px solid rgba(0,0,0,0.25);
+        }
+        .badgeSupportLink:hover{
+          filter: brightness(1.05);
+        }
+        .badgeSupportImgLink img{
+          display: block;
+          height: 32px;
+          width: auto;
+          border-radius: 10px;
+        }
       `;
 
       this.innerHTML = "";
@@ -1392,6 +1626,7 @@ row._tf = tf;
       this._elShowUnused.checked = !!this._config.show_unused;
 
       this._syncColor(this._rowText, this._config.text_color);
+      this._syncColor(this._rowTitle, this._config.title_color);
       this._syncColor(this._rowBg, this._config.background_color);
       this._syncColor(this._rowUnused, this._config.unused_color);
       this._syncColor(this._rowDotOff, this._config.matrix_dot_off_color);
