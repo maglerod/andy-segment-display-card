@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.2
+ * v2.0.3
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,11 +12,14 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog 
- * 2.0.2 - 2026-02-21
- * Title now remains visible in Home Assistant Light Mode (respects card background).
- * Added Variables reference + Support section at bottom of the Visual Editor.
- * Added global 'Title color' field (empty = theme-aware).
- * Value & Title now supports the full variable set as well.
+ * 2.0.3 - 2026-02-02
+ * FIX: Title default color is now fixed gray (same in Light/Dark). If Title color is set, it overrides.
+ * 
+  2.0.2 - 2026-02-01
+ * FIX: Title now remains visible in Home Assistant Light Mode (respects card background).
+ * UI: Added Variables reference + Support section at bottom of the Visual Editor.
+ * UI: Added global 'Title color' field (empty = theme-aware).
+ * NEW: value_template & Title now supports the full variable set as well.
  *
  * 2.0.1 - 2026-01-22
  * Multi-entity support (Slides): rotate between multiple entities instead of showing only one
@@ -54,8 +57,8 @@
 
 (() => {
   
-  const CARD_VERSION = "2.0.2";
-  const CARD_TAG = "andy-segment-display-card";
+  const CARD_VERSION = "2.0.3";
+  const CARD_TAG = "andy-segment-display-card-development";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
   const CARD_TAGLINE = `${CARD_NAME} v${CARD_VERSION}`;
