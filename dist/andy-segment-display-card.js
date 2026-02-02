@@ -12,11 +12,11 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog 
- * 2.0.2 - 2026-02-01
- * FIX: Title now remains visible in Home Assistant Light Mode (respects card background).
- * UI: Added Variables reference + Support section at bottom of the Visual Editor.
- * UI: Added global 'Title color' field (empty = theme-aware).
- * NEW: value_template & Title now supports the full variable set as well.
+ * 2.0.2 - 2026-02-21
+ * Title now remains visible in Home Assistant Light Mode (respects card background).
+ * Added Variables reference + Support section at bottom of the Visual Editor.
+ * Added global 'Title color' field (empty = theme-aware).
+ * Value & Title now supports the full variable set as well.
  *
  * 2.0.1 - 2026-01-22
  * Multi-entity support (Slides): rotate between multiple entities instead of showing only one
@@ -77,6 +77,8 @@ console.info(
 
 
   // -------------------- Defaults --------------------
+  const DEFAULT_TITLE_COLOR = "rgba(255,255,255,0.75)";
+
   const DEFAULTS_GLOBAL = {
     // Global render settings (apply to ALL slides)
     render_style: "segment", // "segment" | "matrix" | "plain"
@@ -727,7 +729,7 @@ function svgForMatrixChar(ch, cfg) {
                 padding: 10px 12px 0 12px;
                 font-size: 14px;
                 opacity: 0.85;
-                color: var(--asdc-title-color, var(--primary-text-color));
+                color: var(--asdc-title-color, rgba(255,255,255,0.75));
                 display: none;
               }
               #${this._uid} .wrap {
@@ -918,11 +920,9 @@ function svgForMatrixChar(ch, cfg) {
 
       const showUnused = !!cfg.show_unused;
       this._els.card.style.setProperty("--asdc-text-color", activeTextColor);
-      if (cfg.title_color) {
-        this._els.card.style.setProperty("--asdc-title-color", cfg.title_color);
-      } else {
-        this._els.card.style.removeProperty("--asdc-title-color");
-      }
+      const titleDefault = DEFAULT_TITLE_COLOR;
+      const tc = String(cfg.title_color || "").trim();
+      this._els.card.style.setProperty("--asdc-title-color", tc !== "" ? tc : titleDefault);
       this._els.card.style.setProperty("--asdc-dot-on", dotOn);
       this._els.card.style.setProperty("--asdc-dot-off", (cfg.matrix_dot_off_color || DEFAULTS_GLOBAL.matrix_dot_off_color).toUpperCase());
       this._els.card.style.setProperty("--asdc-unused-fill", showUnused ? (cfg.unused_color || DEFAULTS_GLOBAL.unused_color).toUpperCase() : "transparent");
@@ -1053,7 +1053,7 @@ function svgForMatrixChar(ch, cfg) {
 
         const tf = document.createElement("ha-textfield");
         tf.label = label;
-        tf.placeholder = allowEmpty ? "(empty = auto)" : "#RRGGBB";
+        tf.placeholder = allowEmpty ? "(empty = default gray)" : "#RRGGBB";
         tf.configValue = key;
         tf.addEventListener("change", (e) => this._onChange(e));
         tf.addEventListener("value-changed", (e) => this._onChange(e));
