@@ -58,7 +58,7 @@
 (() => {
   
   const CARD_VERSION = "2.0.3";
-  const CARD_TAG = "andy-segment-display-card-development";
+  const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
   const CARD_TAGLINE = `${CARD_NAME} v${CARD_VERSION}`;
