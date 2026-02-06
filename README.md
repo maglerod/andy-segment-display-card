@@ -1,13 +1,15 @@
-# Andy Segment Display Card V2.0
+# Andy Segment Display Card V2.0.4
 
 ### 7-segment mode (numeric) Dot-matrix mode (text) & Plain text
 ![Preview of display](Images/segment-display-card.png)
+![Preview of progressbar](Images/rowsprogress.png)
+![Preview of slides](Images/slides.png)
 ![Visual editor](Images/segment-display-card-configeditor_1.png)
 
 > **Recommended installation method:** HACS  
 > Manual installation is supported but not recommended unless HACS is unavailable.
 
-A Home Assistant Lovelace custom card that renders an entity state in a classic digital display style, and now support multiple entities!
+A Home Assistant Lovelace custom card that renders an entity state in a classic digital display style, and now support multiple entities / rows / slides and progressbar
 
 - 7-segment mode for numeric values (calculator/thermometer look)
 - 5x7 dot-matrix mode for text states
@@ -32,6 +34,14 @@ Features:
 
 - Safe multi-card usage:
 - Instance-scoped CSS prevents multiple cards from affecting each other
+
+## v2.0.4
+- Added Multiple ROW Support! 
+- Added support for special characters (scroll down
+- Added support for unit with both lowercase / uppercase
+- Showing unused matrix dots
+- Added support for Progressbar on numeric values
+- Added support for showing icon in Title, can be left / right aligned
 
 ## v2.0 
 - Multi-entity support (Slides): rotate between multiple entities instead of showing only one
