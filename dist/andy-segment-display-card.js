@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.3
+ * v2.0.4
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -11,7 +11,15 @@
  *
  * Install: Se README.md in GITHUB
  *
- * Changelog 
+ * Changelog
+ * 2.0.4 - 2026-02-06
+ * Added Multiple ROW Support! 
+ * Added support for special characters
+ * Added support for unit with both lowercase / uppercase
+ * Showing unused matrix dots
+ * Added support for Progressbar on numeric values
+ * Added support for showing icon in Title, can be left / right aligned
+ *
  * 2.0.3 - 2026-02-02
  * FIX: Title default color is now fixed gray (same in Light/Dark). If Title color is set, it overrides.
  * 
@@ -57,7 +65,7 @@
 
 (() => {
   
-  const CARD_VERSION = "2.0.3";
+  const CARD_VERSION = "2.0.4";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -121,6 +129,8 @@ console.info(
   animate_single: false,
     entity: "",
     title: "",
+    title_icon: "",
+    title_icon_align: "left",
 
     // Numeric formatting
     decimals: null,      // manual (wins over auto_decimals)
@@ -128,8 +138,16 @@ console.info(
     leading_zero: true,
     show_unit: false,
 
+    // Color intervals (slide override, optional)
+    color_intervals: [], // { from:number, to:number, color:"#RRGGBB" }
+
     // Text template (matrix/plain only): use "<value>" placeholder
     value_template: "<value>",
+
+    // Dot-matrix progress bar (numeric)
+    matrix_progress: false,
+    progress_min: 0,
+    progress_max: 100,
 
     // Slide switching
     stay_s: 3,
@@ -140,6 +158,11 @@ console.info(
     hide_style: "run_right",
     hide_prev_first: true,
   };
+
+
+const DEFAULT_ROW = {
+  slides: [{ ...DEFAULT_SLIDE, title: "Slide 1" }],
+};
 
 const SEGMENTS = {
   "0": [1,1,1,1,1,1,0],
@@ -212,7 +235,90 @@ const FONT_5X7 = {
   "Ö": [14,17,17,17,17,17,14], // treat as O
   "Æ": [14,17,17,31,17,17,17], // A-like
   "Ø": [14,17,17,17,17,17,14], // O-like
+  // Lowercase (basic). If not present, we will fall back to uppercase glyphs below.
+  "k": [16,16,18,20,24,20,18],
+  "h": [16,16,30,17,17,17,17],
+  "w": [17,17,17,21,21,21,10],
+
 };
+
+// FONT_5X7_LOWERCASE_FALLBACK: map missing a-z to A-Z glyphs (keeps unit casing from HA)
+for (let i = 65; i <= 90; i++) {
+  const up = String.fromCharCode(i);
+  const lo = up.toLowerCase();
+  if (!FONT_5X7[lo]) FONT_5X7[lo] = FONT_5X7[up];
+}
+
+// ----- Dot-matrix icon tokens (v2.0.4+) --------------------
+// These let users write placeholders like <degree> or <cloud> inside value/title templates.
+// They are replaced with private-use characters that map to extra 5x7 glyphs.
+const MATRIX_ICON_TOKENS = Object.freeze({
+  degree: "°",
+  x: "\uE01A",
+  stop: "\uE019",
+  rain: "\uE003",
+  rain_huge: "\uE004",
+  ip: "\uE01B",
+  full: "\uE01C",
+  calendar: "\uE00C",
+  windows: "\uE00D",
+  clouds: "\uE002",
+  cloud: "\uE001",
+  door: "\uE00E",
+  female: "\uE00F",
+  snowflake: "\uE005",
+  key: "\uE011",
+  male: "\uE010",
+  alarm: "\uE012",
+  clock: "\uE013",
+  garbage: "\uE014",
+  info: "\uE015",
+  moon: "\uE009",
+  message: "\uE016",
+  reminder: "\uE017",
+  wifi: "\uE018",
+  thunderstorm: "\uE006",
+  sun: "\uE007",
+  fog: "\uE00B",
+  cloud_moon: "\uE00A",
+  sun_cloud: "\uE008",
+});
+
+// Minimal 5x7 glyphs for the tokens above.
+// NOTE: these are intentionally simple and readable at small sizes.
+Object.assign(FONT_5X7, {
+  "°": [0b00110,0b01001,0b01001,0b00110,0,0,0],
+  [MATRIX_ICON_TOKENS.x]: [0b10001,0b01010,0b00100,0b01010,0b10001,0,0],
+  [MATRIX_ICON_TOKENS.stop]: [0b01110,0b10001,0b10101,0b10101,0b10001,0b01110,0],
+  [MATRIX_ICON_TOKENS.ip]: [0b11111,0b00100,0b00100,0b00100,0b00100,0,0], // simple "i" bar (pairs well with "p:" text)
+  [MATRIX_ICON_TOKENS.full]: [0b11111,0b11111,0b11111,0b11111,0b11111,0b11111,0b11111],
+
+  [MATRIX_ICON_TOKENS.cloud]: [0,0b00110,0b01001,0b11111,0b11111,0b11111,0],
+  [MATRIX_ICON_TOKENS.clouds]: [0b00110,0b01111,0b11001,0b11111,0b11111,0b11111,0],
+  [MATRIX_ICON_TOKENS.rain]: [0,0b00110,0b01001,0b11111,0b11111,0b10101,0b01010],
+  [MATRIX_ICON_TOKENS.rain_huge]: [0b00110,0b01001,0b11111,0b11111,0b10101,0b10101,0b01010],
+  [MATRIX_ICON_TOKENS.snowflake]: [0b10101,0b01110,0b11111,0b01110,0b10101,0,0],
+  [MATRIX_ICON_TOKENS.thunderstorm]: [0b00110,0b01001,0b11111,0b11111,0b00100,0b01000,0b10000],
+  [MATRIX_ICON_TOKENS.sun]: [0b00100,0b10101,0b01110,0b11111,0b01110,0b10101,0b00100],
+  [MATRIX_ICON_TOKENS.sun_cloud]: [0b00100,0b10101,0b01111,0b11111,0b11111,0b11111,0],
+  [MATRIX_ICON_TOKENS.moon]: [0b00111,0b01100,0b11000,0b11000,0b01100,0b00111,0],
+  [MATRIX_ICON_TOKENS.cloud_moon]: [0b00111,0b01101,0b11001,0b11111,0b11111,0b11111,0],
+  [MATRIX_ICON_TOKENS.fog]: [0,0b11111,0,0b11111,0,0b11111,0],
+
+  [MATRIX_ICON_TOKENS.calendar]: [0b11111,0b10101,0b11111,0b10001,0b11111,0,0],
+  [MATRIX_ICON_TOKENS.windows]: [0b11111,0b10101,0b11111,0b10101,0b11111,0,0],
+  [MATRIX_ICON_TOKENS.door]: [0b11110,0b10010,0b10010,0b10010,0b11110,0,0],
+  [MATRIX_ICON_TOKENS.female]: [0b00100,0b01110,0b00100,0b01110,0b00100,0b00100,0],
+  [MATRIX_ICON_TOKENS.male]: [0b11100,0b10100,0b11111,0b00100,0b00100,0,0],
+  [MATRIX_ICON_TOKENS.key]: [0b00110,0b01001,0b00110,0b00100,0b00100,0b00110,0],
+  [MATRIX_ICON_TOKENS.alarm]: [0b00100,0b01110,0b01110,0b01110,0b11111,0b00100,0],
+  [MATRIX_ICON_TOKENS.clock]: [0b01110,0b10001,0b10101,0b10011,0b01110,0,0],
+  [MATRIX_ICON_TOKENS.garbage]: [0b01110,0b11111,0b10101,0b10101,0b11111,0,0],
+  [MATRIX_ICON_TOKENS.info]: [0b00100,0,0b00100,0b00100,0b00100,0,0],
+  [MATRIX_ICON_TOKENS.message]: [0b11111,0b10001,0b10101,0b10001,0b11111,0,0],
+  [MATRIX_ICON_TOKENS.reminder]: [0b01110,0b10001,0b11111,0b10001,0b01110,0,0],
+  [MATRIX_ICON_TOKENS.wifi]: [0b00001,0b00110,0b01000,0b00110,0b00001,0,0],
+});
 function clampInt(n, min, max) {
   const x = Number.isFinite(n) ? n : min;
   return Math.max(min, Math.min(max, x));
@@ -225,7 +331,7 @@ function normalizeForMatrix(s) {
     .replaceAll("ö", "Ö")
     .replaceAll("æ", "Æ")
     .replaceAll("ø", "Ø")
-    .toUpperCase();
+    ;
 }
 
 
@@ -255,6 +361,8 @@ function applyTemplate(tpl, vars) {
     const key = String(k || "").trim();
     const v = vars?.attr?.[key];
     return (v === undefined || v === null) ? "" : String(v);
+  }).replace(/<(degree|x|stop|rain|rain_huge|ip|full|calendar|windows|clouds|cloud|door|female|snowflake|key|male|alarm|clock|garbage|info|moon|message|reminder|wifi|thunderstorm|sun|fog|cloud_moon|sun_cloud)>/g, (_, n) => {
+    return MATRIX_ICON_TOKENS?.[String(n)] ?? "";
   }).replaceAll("<value>", String(vars.value ?? ""))
     .replaceAll("<state>", String(vars.state ?? ""))
     .replaceAll("<name>", String(vars.name ?? ""))
@@ -338,6 +446,30 @@ function toDisplayString(stateObj, cfg) {
   const max = clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40);
   return s.length > max ? s.slice(s.length - max) : s;
 }
+
+
+function setTitleWithIcon(titleEl, text, icon, align) {
+  titleEl.innerHTML = "";
+  titleEl.classList.toggle("asdc-title-has-icon", !!icon);
+  titleEl.classList.toggle("asdc-title-icon-right", (align === "right"));
+  const span = document.createElement("span");
+  span.className = "asdc-title-text";
+  span.textContent = text || "";
+  if (icon) {
+    const ic = document.createElement("ha-icon");
+    ic.setAttribute("icon", icon);
+    ic.className = "asdc-title-icon";
+    if (align === "right") {
+      titleEl.appendChild(span);
+      titleEl.appendChild(ic);
+    } else {
+      titleEl.appendChild(ic);
+      titleEl.appendChild(span);
+    }
+  } else {
+    titleEl.appendChild(span);
+  }
+}
 /* -------- 7-segment rendering -------- */
 function svgForSegmentChar(ch, cfg) {
   if (ch === ".") {
@@ -381,7 +513,14 @@ function svgForMatrixChar(ch, cfg) {
   const rows = clampInt(cfg.matrix_rows ?? 7, 5, 9);
   const gap = clampInt(cfg.matrix_gap ?? 2, 0, 6);
 
-  const pattern = FONT_5X7[ch] || FONT_5X7[" "];
+  let pattern = FONT_5X7[ch];
+  if (!pattern && typeof ch === "string" && ch.length === 1) {
+    const cc = ch.charCodeAt(0);
+    if (cc >= 97 && cc <= 122) {
+      pattern = FONT_5X7[ch.toUpperCase()];
+    }
+  }
+  if (!pattern) pattern = FONT_5X7[" "];
 
   const cell = 10;
   const w = cols * cell + (cols - 1) * gap;
@@ -473,12 +612,25 @@ function svgForMatrixChar(ch, cfg) {
     const cfg = config || {};
     const _type = cfg.type;
 
-    // If already v2-like
+    // v2.1+ (rows) migration / normalization
+    if (Array.isArray(cfg.rows) && cfg.rows.length) {
+      const global = { ...DEFAULTS_GLOBAL, ...(cfg.global || cfg) };
+      global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
+      const rows = cfg.rows.map((r) => {
+        const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE }];
+        return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+      });
+      // keep backward-compatible top-level slides as row 0
+      return { ...(_type ? { type: _type } : {}), ...global, rows, slides: rows[0].slides };
+    }
+
+    // If already v2-like (slides only)
     if (Array.isArray(cfg.slides)) {
       const global = { ...DEFAULTS_GLOBAL, ...(cfg.global || cfg) };
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
       const slides = cfg.slides.length > 0 ? cfg.slides : [{ ...DEFAULT_SLIDE }];
-      return { ...(_type ? { type: _type } : {}), ...global, slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+      const normSlides = slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
     }
 
     // v1 -> v2 migration
@@ -498,7 +650,8 @@ function svgForMatrixChar(ch, cfg) {
     slide.leading_zero = cfg.leading_zero !== false;
     slide.show_unit = !!cfg.show_unit;
 
-    return { ...(_type ? { type: _type } : {}), ...global, slides: [slide] };
+    const normSlides = [slide];
+    return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
   }
 
   // -------------------- Card --------------------
@@ -508,12 +661,16 @@ function svgForMatrixChar(ch, cfg) {
       this._uid = `asdc-${Math.random().toString(36).slice(2, 10)}`;
       this._built = false;
       this._els = null;
-      this._lastText = null;
       this._raf = 0;
 
+      this._rowStates = [];
+      this._rowEls = [];
+
+      // Legacy mirrors (row 0)
       this._slideIndex = 0;
       this._timer = 0;
       this._isSwitching = false;
+
     }
 
     static getConfigElement() {
@@ -541,7 +698,7 @@ function svgForMatrixChar(ch, cfg) {
     }
 
     disconnectedCallback() {
-      this._clearTimer();
+      this._clearAllTimers();
     }
 
     getCardSize() {
@@ -556,61 +713,126 @@ function svgForMatrixChar(ch, cfg) {
       });
     }
 
-    _clearTimer() {
-      if (this._timer) {
-        clearTimeout(this._timer);
-        this._timer = 0;
+    _getRows() {
+      const cfg = this._config || {};
+      if (Array.isArray(cfg.rows) && cfg.rows.length) {
+        return cfg.rows.map(r => ({
+          ...(r || {}),
+          slides: Array.isArray(r?.slides) && r.slides.length ? r.slides : [{ ...DEFAULT_SLIDE }],
+        }));
       }
-      this._isSwitching = false;
+      const slides = Array.isArray(cfg.slides) && cfg.slides.length ? cfg.slides : [{ ...DEFAULT_SLIDE }];
+      return [{ ...DEFAULT_ROW, slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+    }
+
+    _ensureRowState(count) {
+      while (this._rowStates.length < count) {
+        this._rowStates.push({
+          slideIndex: 0,
+          timer: 0,
+          isSwitching: false,
+          lastText: null,
+        });
+      }
+      if (this._rowStates.length > count) {
+        // clear timers for removed rows
+        for (let i = count; i < this._rowStates.length; i++) {
+          const st = this._rowStates[i];
+          if (st?.timer) clearTimeout(st.timer);
+        }
+        this._rowStates.length = count;
+      }
+    }
+
+    _clearAllTimers() {
+      (this._rowStates || []).forEach(st => {
+        if (st?.timer) clearTimeout(st.timer);
+        if (st) {
+          st.timer = 0;
+          st.isSwitching = false;
+        }
+      });
+    }
+
+    _clearRowTimer(rowIndex) {
+      const st = this._rowStates[rowIndex];
+      if (st?.timer) {
+        clearTimeout(st.timer);
+        st.timer = 0;
+      }
+      if (st) st.isSwitching = false;
     }
 
     _resetScheduler(force) {
+      const rows = this._getRows();
+      this._ensureRowState(rows.length);
+
       if (force) {
-        this._clearTimer();
-        this._slideIndex = 0;
-        this._startLoop();
-      } else {
-        this._startLoop();
+        this._clearAllTimers();
+        this._rowStates.forEach(st => { st.slideIndex = 0; st.lastText = null; });
       }
+
+      // Start loops for all rows
+      rows.forEach((row, idx) => this._startLoopRow(idx, row));
     }
 
-    _startLoop() {
+    _startLoopRow(rowIndex, row) {
       const cfg = this._config;
-      const slides = Array.isArray(cfg?.slides) ? cfg.slides : [];
+      if (!cfg) {
+        this._clearRowTimer(rowIndex);
+        return;
+      }
+
+      const slides = Array.isArray(row?.slides) ? row.slides : [];
+      if (slides.length < 1) {
+        this._clearRowTimer(rowIndex);
+        return;
+      }
+
       // Single-slide: do not auto-animate unless explicitly enabled
       if (slides.length === 1 && !slides[0]?.animate_single) {
-        this._clearTimer();
+        this._clearRowTimer(rowIndex);
         return;
       }
-      if (!cfg || !slides || slides.length < 1) {
-        this._clearTimer();
-        return;
-      }
-      if (!this._timer && !this._isSwitching) {
-        const s = slides[this._slideIndex] || DEFAULT_SLIDE;
+
+      const st = this._rowStates[rowIndex];
+      if (!st) return;
+
+      if (!st.timer && !st.isSwitching) {
+        const s = slides[st.slideIndex] || DEFAULT_SLIDE;
         const stay = Math.max(0, Number(s.stay_s) || 0);
-        this._timer = setTimeout(() => this._nextSlide(), stay * 1000);
+        st.timer = setTimeout(() => this._nextSlideRow(rowIndex), stay * 1000);
       }
     }
 
-    async _nextSlide() {
+    async _nextSlideRow(rowIndex) {
       const cfg = this._config;
-      const slides = Array.isArray(cfg?.slides) ? cfg.slides : [];
+      const rows = this._getRows();
+      if (!cfg || !rows.length) {
+        this._clearRowTimer(rowIndex);
+        return;
+      }
+
+      const row = rows[rowIndex];
+      const slides = Array.isArray(row?.slides) ? row.slides : [];
+      const st = this._rowStates[rowIndex];
+      if (!st || slides.length < 1) {
+        this._clearRowTimer(rowIndex);
+        return;
+      }
+
       // Single-slide: only animate if enabled
       if (slides.length === 1 && !slides[0]?.animate_single) {
-        this._clearTimer();
-        this._isSwitching = false;
+        this._clearRowTimer(rowIndex);
+        st.isSwitching = false;
         return;
       }
-      if (!cfg || slides.length < 1 || !this._els) {
-        this._clearTimer();
-        return;
-      }
-      this._clearTimer();
-      this._isSwitching = true;
 
-      const current = slides[this._slideIndex] || DEFAULT_SLIDE;
-      const nextIndex = (this._slideIndex + 1) % slides.length;
+      this._clearRowTimer(rowIndex);
+      st.isSwitching = true;
+
+      const current = slides[st.slideIndex] || DEFAULT_SLIDE;
+      const nextIndex = (st.slideIndex + 1) % slides.length;
       const next = slides[nextIndex] || DEFAULT_SLIDE;
 
       const outS = Math.max(0, Number(current.out_s) || 0);
@@ -619,38 +841,46 @@ function svgForMatrixChar(ch, cfg) {
       const isSingle = (slides.length === 1);
       const runOut = (outS > 0) && (isRunning ? true : (isSingle ? true : !!current.hide_prev_first));
 
-      if (runOut) {
-        const outStyle = isRunning ? "running" : (isSingle ? current.hide_style : current.hide_style);
-        applyAnim(this._els.display, outStyle, "out", outS, !!current.fade);
+      const els = this._rowEls[rowIndex];
+      const displayEl = els?.display || this._els?.display;
+      if (displayEl && runOut) {
+        const outStyle = isRunning ? "running" : current.hide_style;
+        applyAnim(displayEl, outStyle, "out", outS, !!current.fade);
         await new Promise((res) => setTimeout(res, outS * 1000));
-        clearAnim(this._els.display);
+        clearAnim(displayEl);
+      } else if (displayEl) {
+        clearAnim(displayEl);
       }
 
-      this._slideIndex = nextIndex;
-      this._lastText = null;
+      st.slideIndex = nextIndex;
+      st.lastText = null;
       this._render();
 
-      if (inS > 0) {
-        applyAnim(this._els.display, next.show_style, "in", inS, !!next.fade);
+      if (displayEl && inS > 0) {
+        applyAnim(displayEl, next.show_style, "in", inS, !!next.fade);
         await new Promise((res) => setTimeout(res, inS * 1000));
-        clearAnim(this._els.display);
+        clearAnim(displayEl);
       }
 
-      this._isSwitching = false;
+      st.isSwitching = false;
 
       const stay = Math.max(0, Number(next.stay_s) || 0);
-      this._timer = setTimeout(() => this._nextSlide(), stay * 1000);
+      st.timer = setTimeout(() => this._nextSlideRow(rowIndex), stay * 1000);
     }
+
+      
+
 
     _effectiveMaxChars(renderedText) {
       const cfg = this._config;
       return clampInt(cfg.max_chars ?? DEFAULTS_GLOBAL.max_chars, 1, 40);
     }
 
-    _computeActiveTextColor(stateObj) {
+    _computeActiveTextColor(stateObj, slide) {
       const cfg = this._config;
       const n = toNumberOrNull(stateObj);
-      const intervalColor = (n === null) ? null : pickIntervalColor(cfg.color_intervals, n);
+      const intervals = (slide && Array.isArray(slide.color_intervals) && slide.color_intervals.length) ? slide.color_intervals : cfg.color_intervals;
+      const intervalColor = (n === null) ? null : pickIntervalColor(intervals, n);
       return (intervalColor || cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
     }
 
@@ -658,55 +888,9 @@ function svgForMatrixChar(ch, cfg) {
       if (!this._config) return;
 
       const cfg = this._config;
-      const slides = Array.isArray(cfg.slides) ? cfg.slides : [{ ...DEFAULT_SLIDE }];
-      const slide = slides[this._slideIndex] || slides[0] || DEFAULT_SLIDE;
+      const rows = this._getRows();
 
-      const stateObj = (this._hass && slide.entity) ? this._hass.states[slide.entity] : null;
-
-      const mergedForValue = {
-        ...DEFAULTS_GLOBAL,
-        ...cfg,
-        ...DEFAULT_SLIDE,
-        ...slide,
-        render_style: cfg.render_style,
-        max_chars: 999, // no truncation here
-      };
-
-      let valueStr = toDisplayString(stateObj, mergedForValue);
-
-      const vars = {
-        value: valueStr,
-        state: stateObj?.state ?? "",
-        name: stateObj?.attributes?.friendly_name ?? slide.title ?? "",
-        unit: stateObj?.attributes?.unit_of_measurement ?? "",
-        entity_id: slide.entity ?? "",
-        domain: (slide.entity || "").split(".")[0] || "",
-        last_changed: formatTimeLocal(stateObj?.last_changed),
-        last_updated: formatTimeLocal(stateObj?.last_updated),
-        last_changed_rel: formatRel(stateObj?.last_changed),
-        last_updated_rel: formatRel(stateObj?.last_updated),
-        last_changed_iso: formatTimeISO(stateObj?.last_changed),
-        last_updated_iso: formatTimeISO(stateObj?.last_updated),
-        attr: stateObj?.attributes || {},
-      };
-
-      let displayStr = valueStr;
-      if ((cfg.render_style || "segment") !== "segment") {
-        const tpl = String(slide.value_template || "<value>");
-        if (tpl.includes("<")) {
-          displayStr = applyTemplate(tpl, vars);
-        } else {
-          // legacy: if no placeholders are used, append the value
-          displayStr = tpl + valueStr;
-        }
-
-        if ((cfg.render_style || "matrix") === "matrix") {
-          displayStr = normalizeForMatrix(displayStr);
-        }
-      }
-
-      const effMax = this._effectiveMaxChars(displayStr);
-      if (displayStr.length > effMax) displayStr = displayStr.slice(displayStr.length - effMax);
+      this._ensureRowState(rows.length);
 
       const sizePx = Number(cfg.size_px ?? 0);
       const isAuto = !Number.isFinite(sizePx) || sizePx <= 0;
@@ -718,28 +902,34 @@ function svgForMatrixChar(ch, cfg) {
         this.innerHTML = `
           <div id="${this._uid}" class="asdc-root">
             <ha-card class="asdc-card">
-              <div class="title"></div>
               <div class="wrap">
-                <div class="display" role="img"></div>
+                <div class="rows"></div>
               </div>
             </ha-card>
 
             <style>
-              #${this._uid} .asdc-card {
-                overflow: hidden;
+              #${this._uid} .asdc-card { overflow: hidden; }
+              #${this._uid} .wrap { width: 100%; padding: 10px 12px 12px 12px; box-sizing: border-box; }
+              #${this._uid} .rows { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+
+              #${this._uid} .asdc-row { width: 100%; }
+              #${this._uid} .row-title{
+
+              #${this._uid} .row-title{
+                align-items: center;
+                gap: 6px;
               }
-              #${this._uid} .title{
-                padding: 10px 12px 0 12px;
+              #${this._uid} .row-title .asdc-title-icon{
+                --mdc-icon-size: 18px;
+                opacity: 0.95;
+              }
+                padding: 0 0 6px 0;
                 font-size: 14px;
-                opacity: 0.85;
-                color: var(--asdc-title-color, rgba(255,255,255,0.75));
+                opacity: 0.9;
+                color: var(--asdc-title-color, ${DEFAULT_TITLE_COLOR});
                 display: none;
               }
-              #${this._uid} .wrap {
-                width: 100%;
-                padding: 10px 12px 12px 12px;
-                box-sizing: border-box;
-              }
+
               #${this._uid} .display {
                 display: flex;
                 align-items: center;
@@ -748,11 +938,7 @@ function svgForMatrixChar(ch, cfg) {
                 width: 100%;
                 transform-origin: center;
               }
-              #${this._uid} .char {
-                height: 100%;
-                width: auto;
-                flex: 0 0 auto;
-              }
+              #${this._uid} .char { height: 100%; width: auto; flex: 0 0 auto; }
               #${this._uid} .wrap.segment .char.dot { width: 26px; }
 
               /* Segment mode (kept from v1) */
@@ -760,21 +946,17 @@ function svgForMatrixChar(ch, cfg) {
                 fill: var(--asdc-text-color);
                 filter: drop-shadow(0 0 6px rgba(0,0,0,0.35));
               }
-              #${this._uid} .wrap.segment .seg.off {
-                fill: var(--asdc-unused-fill);
-              }
+              #${this._uid} .wrap.segment .seg.off { fill: var(--asdc-unused-fill); }
 
               /* Matrix mode (kept from v1) */
               #${this._uid} .wrap.matrix .dot.on {
                 fill: var(--asdc-dot-on);
                 filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
               }
-              #${this._uid} .wrap.matrix .dot.off {
-                fill: var(--asdc-dot-off);
-              }
+              #${this._uid} .wrap.matrix .dot.off { fill: var(--asdc-dot-off); }
 
               /* Plain text mode */
-              #${this._uid} .wrap.plain .plainText {
+              #${this._uid} .wrap.plain .plainText{
                 width: 100%;
                 white-space: nowrap;
                 overflow: hidden;
@@ -789,188 +971,247 @@ function svgForMatrixChar(ch, cfg) {
               }
 
               /* Optional: italic (segment/plain) */
-              #${this._uid} .display.asdc-italic {
-                transform: skewX(-10deg);
-              }
-              #${this._uid} .wrap.plain .plainText.asdc-italic {
-                font-style: italic;
-                transform: none;
-              }
+              #${this._uid} .display.asdc-italic { transform: skewX(-10deg); }
+              #${this._uid} .wrap.plain .plainText.asdc-italic { font-style: italic; transform: none; }
 
               /* Animation base */
-              #${this._uid} .display.asdc-anim {
-                will-change: transform, opacity, filter;
-              }
+              #${this._uid} .display.asdc-anim { will-change: transform, opacity, filter; }
 
               /* Keyframes */
-              @keyframes asdc-in-run-left {
-                0% { transform: translateX(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-                100% { transform: translateX(0); opacity: 1; }
-              }
-              @keyframes asdc-out-run-left {
-                0% { transform: translateX(0); opacity: 1; }
-                100% { transform: translateX(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-              }
-              @keyframes asdc-in-run-right {
-                0% { transform: translateX(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-                100% { transform: translateX(0); opacity: 1; }
-              }
-              @keyframes asdc-out-run-right {
-                0% { transform: translateX(0); opacity: 1; }
-                100% { transform: translateX(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-              }
-              
-              @keyframes asdc-in-run-top {
-                0% { transform: translateY(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-                100% { transform: translateY(0); opacity: 1; }
-              }
-              @keyframes asdc-out-run-top {
-                0% { transform: translateY(0); opacity: 1; }
-                100% { transform: translateY(-25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-              }
-              @keyframes asdc-in-run-bottom {
-                0% { transform: translateY(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-                100% { transform: translateY(0); opacity: 1; }
-              }
-              @keyframes asdc-out-run-bottom {
-                0% { transform: translateY(0); opacity: 1; }
-                100% { transform: translateY(25%); opacity: calc(1 - var(--asdc-anim-fade)); }
-              }
-@keyframes asdc-in-billboard {
-                0% { transform: perspective(600px) rotateX(75deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
-                100% { transform: perspective(600px) rotateX(0deg); opacity: 1; filter: blur(0px); }
-              }
-              @keyframes asdc-out-billboard {
-                0% { transform: perspective(600px) rotateX(0deg); opacity: 1; filter: blur(0px); }
-                100% { transform: perspective(600px) rotateX(-75deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
-              }
-              @keyframes asdc-in-matrix {
-                0% { transform: translateY(-10%) skewX(-8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
-                100% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0px); }
-              }
-              @keyframes asdc-out-matrix {
-                0% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0px); }
-                100% { transform: translateY(10%) skewX(8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px); }
-              }
+              @keyframes asdc-in-run-left { 0% { transform: translateX(-25%); opacity: calc(1 - var(--asdc-anim-fade)); } 100% { transform: translateX(0); opacity: 1; } }
+              @keyframes asdc-out-run-left { 0% { transform: translateX(0); opacity: 1; } 100% { transform: translateX(-25%); opacity: calc(1 - var(--asdc-anim-fade)); } }
+              @keyframes asdc-in-run-right { 0% { transform: translateX(25%); opacity: calc(1 - var(--asdc-anim-fade)); } 100% { transform: translateX(0); opacity: 1; } }
+              @keyframes asdc-out-run-right { 0% { transform: translateX(0); opacity: 1; } 100% { transform: translateX(25%); opacity: calc(1 - var(--asdc-anim-fade)); } }
+              @keyframes asdc-in-top { 0% { transform: translateY(-25%); opacity: calc(1 - var(--asdc-anim-fade)); } 100% { transform: translateY(0); opacity: 1; } }
+              @keyframes asdc-out-top { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(-25%); opacity: calc(1 - var(--asdc-anim-fade)); } }
+              @keyframes asdc-in-bottom { 0% { transform: translateY(25%); opacity: calc(1 - var(--asdc-anim-fade)); } 100% { transform: translateY(0); opacity: 1; } }
+              @keyframes asdc-out-bottom { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(25%); opacity: calc(1 - var(--asdc-anim-fade)); } }
+              @keyframes asdc-in-billboard { 0% { transform: perspective(600px) rotateX(75deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px);} 100% { transform: perspective(600px) rotateX(0deg); opacity: 1; filter: blur(0);} }
+              @keyframes asdc-out-billboard { 0% { transform: perspective(600px) rotateX(0deg); opacity: 1; filter: blur(0);} 100% { transform: perspective(600px) rotateX(-75deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px);} }
+              @keyframes asdc-in-matrix { 0% { transform: translateY(-10%) skewX(-8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px);} 100% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0);} }
+              @keyframes asdc-out-matrix { 0% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0);} 100% { transform: translateY(10%) skewX(8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px);} }
+              @keyframes asdc-in-running { 0% { transform: translateX(-100%); } 100% { transform: translateX(0); } }
+              @keyframes asdc-out-running { 0% { transform: translateX(0); } 100% { transform: translateX(100%); } }
             </style>
           </div>
         `;
 
         const root = this.querySelector(`#${this._uid}`);
         this._els = {
-          card: root.querySelector("ha-card"),
-          title: root.querySelector(".title"),
+          root,
+          card: root.querySelector(".asdc-card"),
           wrap: root.querySelector(".wrap"),
-          display: root.querySelector(".display"),
+          rows: root.querySelector(".rows"),
         };
       }
 
-      // Alignment
-      this._els.display.style.justifyContent = cfg.center_text ? "center" : "flex-end";
-
-      // Italic toggle
-      const italicAllowed = (style !== "matrix") && !!cfg.italic;
-      this._els.display.classList.toggle("asdc-italic", italicAllowed);
-
-      // Update layout classes & sizing (no rebuild)
+      // Global wrap class controls the SVG styling for all rows
       this._els.wrap.className = `wrap ${isAuto ? "auto" : "fixed"} ${style}`;
 
-      const maxChars = this._effectiveMaxChars(displayStr);
-
-      if (isAuto) {
-        const ratio =
-          (style === "segment") ? (maxChars / 2.2) :
-          (style === "matrix")  ? (maxChars / 2.8) :
-          (maxChars / 1.6); // plain
-        this._els.display.style.width = "100%";
-        this._els.display.style.height = "";
-        this._els.display.style.aspectRatio = `${ratio}`;
-      } else {
-        this._els.display.style.aspectRatio = "";
-        this._els.display.style.height = `${clampInt(sizePx, 18, 300)}px`;
-      }
-
-      // Title
-      let titleText = (cfg.show_title !== false) ? (slide.title || "") : "";
-      if (titleText) {
-        if (String(titleText).includes("<")) {
-          titleText = applyTemplate(titleText, vars);
-        }
-        this._els.title.textContent = titleText;
-        this._els.title.style.display = "block";
-      } else {
-        this._els.title.textContent = "";
-        this._els.title.style.display = "none";
-      }
-
-      // Card background (card_mod friendly)
+      // Background (card_mod friendly)
       this._els.card.style.setProperty("--ha-card-background", cfg.background_color);
 
-      // Active text color (interval override)
-      const activeTextColor = this._computeActiveTextColor(stateObj);
+      // Ensure row DOM count
+      while (this._rowEls.length < rows.length) {
+        const rowEl = document.createElement("div");
+        rowEl.className = "asdc-row";
 
-      // Dot-matrix Dot ON color:
-      // - In v2, intervals should override ALL render styles.
-      // - For backwards compatibility, if no interval matches (activeTextColor == base text_color),
-      //   we fall back to legacy matrix_dot_on_color (if provided).
-      const baseTextColor = (cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
-      const dotOnLegacy =
-        cfg.matrix_dot_on_color && String(cfg.matrix_dot_on_color).trim() !== ""
-          ? String(cfg.matrix_dot_on_color).trim().toUpperCase()
-          : "";
+        const t = document.createElement("div");
+        t.className = "row-title";
 
-      const dotOn = (activeTextColor !== baseTextColor) ? activeTextColor : (dotOnLegacy || activeTextColor);
+        const d = document.createElement("div");
+        d.className = "display";
+        d.setAttribute("role", "img");
 
-      const showUnused = !!cfg.show_unused;
-      this._els.card.style.setProperty("--asdc-text-color", activeTextColor);
-      const titleDefault = DEFAULT_TITLE_COLOR;
-      const tc = String(cfg.title_color || "").trim();
-      this._els.card.style.setProperty("--asdc-title-color", tc !== "" ? tc : titleDefault);
-      this._els.card.style.setProperty("--asdc-dot-on", dotOn);
-      this._els.card.style.setProperty("--asdc-dot-off", (cfg.matrix_dot_off_color || DEFAULTS_GLOBAL.matrix_dot_off_color).toUpperCase());
-      this._els.card.style.setProperty("--asdc-unused-fill", showUnused ? (cfg.unused_color || DEFAULTS_GLOBAL.unused_color).toUpperCase() : "transparent");
+        rowEl.appendChild(t);
+        rowEl.appendChild(d);
+        this._els.rows.appendChild(rowEl);
 
-      if (displayStr !== this._lastText) {
-        this._lastText = displayStr;
-
-        if (style === "plain") {
-          this._els.display.innerHTML = `<div class="plainText ${italicAllowed ? "asdc-italic" : ""}">${displayStr}</div>`;
-          this._els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
-
-          requestAnimationFrame(() => {
-            const pt = this._els.display.querySelector(".plainText");
-            if (!pt) return;
-
-            // Respect manual size if provided
-            const manual = Number(cfg.size_px) || 0;
-            if (manual > 0) {
-              pt.style.fontSize = `${manual}px`;
-            } else {
-              // Autosize based on the wrapper height (not affected by in/out animations on the display element)
-              const wrapBox = this._els.wrap?.getBoundingClientRect?.() || this._els.display.getBoundingClientRect();
-              const fs = Math.max(12, Math.min(180, wrapBox.height * 0.85));
-              pt.style.fontSize = `${fs}px`;
-            }
-
-            pt.style.justifyContent = cfg.center_text ? "center" : "flex-end";
-          });
-          return;
-        }
-
-        const chars = displayStr
-          .split("")
-          .map((ch) => {
-            if (style === "segment") return svgForSegmentChar(ch, cfg);
-            return svgForMatrixChar(ch, cfg);
-          })
-          .join("");
-
-        this._els.display.innerHTML = chars;
-        this._els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
+        this._rowEls.push({ row: rowEl, title: t, display: d });
+      }
+      while (this._rowEls.length > rows.length) {
+        const last = this._rowEls.pop();
+        if (last?.row?.parentElement) last.row.parentElement.removeChild(last.row);
       }
 
-      this._startLoop();
+      // Render each row independently (as if stacking multiple cards)
+      rows.forEach((row, rowIndex) => {
+        const st = this._rowStates[rowIndex];
+        const els = this._rowEls[rowIndex];
+        if (!els || !st) return;
+
+        const slides = Array.isArray(row.slides) ? row.slides : [{ ...DEFAULT_SLIDE }];
+        const slide = slides[st.slideIndex] || slides[0] || DEFAULT_SLIDE;
+
+        const stateObj = (this._hass && slide.entity) ? this._hass.states[slide.entity] : null;
+
+        const mergedForValue = {
+          ...DEFAULTS_GLOBAL,
+          ...cfg,
+          ...DEFAULT_SLIDE,
+          ...slide,
+          render_style: cfg.render_style,
+          max_chars: 999, // no truncation here
+        };
+
+        let valueStr = toDisplayString(stateObj, mergedForValue);
+
+        const vars = {
+          value: valueStr,
+          state: stateObj?.state ?? "",
+          name: stateObj?.attributes?.friendly_name ?? slide.title ?? "",
+          unit: stateObj?.attributes?.unit_of_measurement ?? "",
+          entity_id: slide.entity ?? "",
+          domain: (slide.entity || "").split(".")[0] || "",
+          last_changed: formatTimeLocal(stateObj?.last_changed),
+          last_updated: formatTimeLocal(stateObj?.last_updated),
+          last_changed_rel: formatRel(stateObj?.last_changed),
+          last_updated_rel: formatRel(stateObj?.last_updated),
+          last_changed_iso: formatTimeISO(stateObj?.last_changed),
+          last_updated_iso: formatTimeISO(stateObj?.last_updated),
+          attr: stateObj?.attributes || {},
+        };
+
+        let displayStr = valueStr;
+        if ((cfg.render_style || "segment") !== "segment") {
+          const tpl = String(slide.value_template || "<value>");
+          if (tpl.includes("<")) {
+            displayStr = applyTemplate(tpl, vars);
+          } else {
+            displayStr = tpl + valueStr;
+          }
+
+          if ((cfg.render_style || "matrix") === "matrix") {
+            displayStr = normalizeForMatrix(displayStr);
+          }
+        }
+
+        // Dot-matrix progress bar (slide): render numeric value as a filled bar across max_chars using the <full> glyph
+        if ((cfg.render_style || "segment") === "matrix" && slide?.matrix_progress) {
+          const nVal = toNumberOrNull(stateObj);
+          const minV = Number(slide.progress_min ?? 0);
+          const maxV = Number(slide.progress_max ?? 100);
+          const lo = Number.isFinite(minV) ? minV : 0;
+          const hi = (Number.isFinite(maxV) && maxV !== lo) ? maxV : (lo + 100);
+          const eff = this._effectiveMaxChars("");
+          const pct = (nVal === null) ? 0 : Math.max(0, Math.min(1, (nVal - lo) / (hi - lo)));
+          const filled = Math.max(0, Math.min(eff, Math.round(pct * eff)));
+          const fullCh = MATRIX_ICON_TOKENS.full;
+          displayStr = fullCh.repeat(filled) + " ".repeat(Math.max(0, eff - filled));
+        }
+
+
+        const effMax = this._effectiveMaxChars(displayStr);
+        if (displayStr.length > effMax) displayStr = displayStr.slice(displayStr.length - effMax);
+
+        // Dot-matrix: pad with spaces up to max chars so unused dot boxes remain visible
+        if ((cfg.render_style || "segment") === "matrix" && effMax > 0 && displayStr.length < effMax) {
+          const pad = effMax - displayStr.length;
+          if (cfg.center_text) {
+            const left = Math.floor(pad / 2);
+            const right = pad - left;
+            displayStr = " ".repeat(left) + displayStr + " ".repeat(right);
+          } else {
+            displayStr = " ".repeat(pad) + displayStr;
+          }
+        }
+
+        // Alignment + italic
+        els.display.style.justifyContent = cfg.center_text ? "center" : "flex-end";
+        const italicAllowed = (style !== "matrix") && !!cfg.italic;
+        els.display.classList.toggle("asdc-italic", italicAllowed);
+
+        // Update per-row sizing
+        const maxChars = this._effectiveMaxChars(displayStr);
+        if (isAuto) {
+          const ratio =
+            (style === "segment") ? (maxChars / 2.2) :
+            (style === "matrix")  ? (maxChars / 2.8) :
+            (maxChars / 1.6); // plain
+          els.display.style.width = "100%";
+          els.display.style.height = "";
+          els.display.style.aspectRatio = `${ratio}`;
+        } else {
+          els.display.style.aspectRatio = "";
+          els.display.style.height = `${clampInt(sizePx, 18, 300)}px`;
+        }
+
+        // Row title (per row)
+        let titleText = (cfg.show_title !== false) ? (slide.title || "") : "";
+        if (titleText) {
+          if (String(titleText).includes("<")) titleText = applyTemplate(titleText, vars);
+          setTitleWithIcon(els.title, titleText, (slide?.title_icon || ""), (slide?.title_icon_align || "left"));
+          els.title.style.display = "flex";
+        } else {
+          els.title.textContent = "";
+          els.title.style.display = "none";
+        }
+
+        // Colors (per row, interval aware)
+        const activeTextColor = this._computeActiveTextColor(stateObj, slide);
+
+        // Dot ON color: follow activeTextColor for all render styles
+        const dotOn = activeTextColor;
+
+        const titleDefault = DEFAULT_TITLE_COLOR; // fixed default gray
+        const tc = String(cfg.title_color || "").trim();
+        els.row.style.setProperty("--asdc-title-color", tc !== "" ? tc : titleDefault);
+
+        els.row.style.setProperty("--asdc-text-color", activeTextColor);
+        els.row.style.setProperty("--asdc-dot-on", dotOn);
+        els.row.style.setProperty("--asdc-dot-off", (cfg.matrix_dot_off_color || DEFAULTS_GLOBAL.matrix_dot_off_color).toUpperCase());
+
+        const showUnused = !!cfg.show_unused;
+        els.row.style.setProperty("--asdc-unused-fill", showUnused ? (cfg.unused_color || DEFAULTS_GLOBAL.unused_color).toUpperCase() : "transparent");
+
+        // Render content only if changed
+        if (displayStr !== st.lastText) {
+          st.lastText = displayStr;
+
+          if (style === "plain") {
+            els.display.innerHTML = `<div class="plainText ${italicAllowed ? "asdc-italic" : ""}">${displayStr}</div>`;
+            els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
+
+            requestAnimationFrame(() => {
+              const pt = els.display.querySelector(".plainText");
+              if (!pt) return;
+
+              const manual = Number(cfg.size_px) || 0;
+              if (manual > 0) {
+                pt.style.fontSize = `${manual}px`;
+              } else {
+                const wrapBox = els.row?.getBoundingClientRect?.() || els.display.getBoundingClientRect();
+                const fs = Math.max(12, Math.min(180, wrapBox.height * 0.85));
+                pt.style.fontSize = `${fs}px`;
+              }
+
+              pt.style.justifyContent = cfg.center_text ? "center" : "flex-end";
+            });
+
+          } else {
+            const chars = displayStr
+              .split("")
+              .map((ch) => {
+                if (style === "segment") return svgForSegmentChar(ch, cfg);
+                return svgForMatrixChar(ch, cfg);
+              })
+              .join("");
+
+            els.display.innerHTML = chars;
+            els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
+          }
+        }
+
+        // Keep legacy mirrors aligned for row 0 only
+        if (rowIndex === 0) {
+          this._slideIndex = st.slideIndex;
+        }
+      });
+
+      // Start/continue loops for each row
+      rows.forEach((row, idx) => this._startLoopRow(idx, row));
     }
+
   }
 
   // Safe define
@@ -1139,6 +1380,14 @@ row._tf = tf;
         return sel;
       };
 
+      const mkIconPicker = (label, key) => {
+        const ip = document.createElement("ha-icon-picker");
+        ip.label = label;
+        ip.configValue = key;
+        ip.addEventListener("value-changed", (e) => this._onChange(e));
+        return ip;
+      };
+
       const mkButton = (text, onClick) => {
         const tag = customElements.get("ha-button") ? "ha-button" : "mwc-button";
         const b = document.createElement(tag);
@@ -1240,7 +1489,37 @@ row._tf = tf;
       secIntervals.appendChild(this._intervalList);
       root.appendChild(secIntervals);
 
-      // ---------- Slides ----------
+      
+      // ---------- Rows ----------
+      const secRows = mkSection("Rows");
+      const rowsHeader = document.createElement("div");
+      rowsHeader.className = "rowHeader";
+      const rh = document.createElement("div");
+      rh.innerText = "Rows";
+      rowsHeader.appendChild(rh);
+
+      this._btnAddRow = mkButton("Add", () => this._addRow());
+      this._btnUpRow  = mkButton("Move up", () => this._moveRow(-1));
+      this._btnDownRow= mkButton("Move down", () => this._moveRow(1));
+      this._btnDelRow = mkButton("Delete", () => this._deleteRow());
+
+      const rowBtns = document.createElement("div");
+      rowBtns.className = "btnRow";
+      rowBtns.appendChild(this._btnAddRow);
+      rowBtns.appendChild(this._btnUpRow);
+      rowBtns.appendChild(this._btnDownRow);
+      rowBtns.appendChild(this._btnDelRow);
+      rowsHeader.appendChild(rowBtns);
+
+      secRows.appendChild(rowsHeader);
+
+      this._rowsList = document.createElement("div");
+      this._rowsList.className = "rowsList";
+      secRows.appendChild(this._rowsList);
+
+      root.appendChild(secRows);
+
+// ---------- Slides ----------
       const secSlides = mkSection("Slides");
       const slidesHeader = document.createElement("div");
       slidesHeader.className = "rowHeader";
@@ -1299,10 +1578,71 @@ row._tf = tf;
         `<code>&lt;attr:xxx&gt;</code> any attribute, e.g. <code>&lt;attr:temperature&gt;</code>`
       ].join("<br/>");
 
+      // Dot-matrix symbol tokens (usable in templates) (usable in templates)
+      const symbolOrder = [
+        ["x", "X"],
+        ["stop", "stop"],
+        ["rain", "rain"],
+        ["ip", "ip:"],
+        ["full", "full light segment"],
+        ["calendar", "calendar"],
+        ["windows", "windows"],
+        ["clouds", "clouds"],
+        ["door", "door"],
+        ["female", "female"],
+        ["snowflake", "snowflake"],
+        ["key", "key"],
+        ["male", "male"],
+        ["alarm", "alarm"],
+        ["clock", "clock"],
+        ["garbage", "garbage"],
+        ["info", "info"],
+        ["moon", "moon"],
+        ["message", "message"],
+        ["reminder", "reminder"],
+        ["wifi", "wifi"],
+        ["rain_huge", "huge rain"],
+        ["sun", "sun"],
+        ["thunderstorm", "thunderstorm"],
+        ["cloud", "cloud"],
+        ["fog", "fog"],
+        ["cloud_moon", "cloud and moon"],
+        ["sun_cloud", "sun and cloud"],
+        ["degree", "degree symbol"],
+      ];
+
+      const symCfg = {
+        matrix_cols: 5,
+        matrix_rows: 7,
+        matrix_gap: 2,
+        matrix_dot_on_color: "#00FF66",
+        matrix_dot_off_color: "#221B1B",
+      };
+
+      const symbolRows = symbolOrder.map(([key, label]) => {
+        const ch = MATRIX_ICON_TOKENS[key];
+        const svg = ch ? svgForMatrixChar(ch, symCfg) : "";
+        return `
+          <div class="badgeSymRow">
+            <div class="badgeSymKey"><code>&lt;${key}&gt;</code></div>
+            <div class="badgeSymLabel">${label}</div>
+            <div class="badgeSymPreview">${svg}</div>
+          </div>
+        `;
+      }).join("");
+
+
       varsHead.innerHTML = `
         <div class="badgeVarsTitle">Variables you can use in templates, with or without your own text</div>
         <div class="badgeVarsList">${varRow}</div>
         <div class="badgeVarsExample"><b>Example:</b> Temperature: <code>&lt;value&gt;</code></div>
+
+        
+        <div class="badgeSymHelp">
+          <div class="badgeSymTitle">Dot-matrix symbols you can use in templates</div>
+          <div class="badgeSymHint">Use these placeholders in Title / Value template when <b>Render style</b> is <b>Dot-matrix (text)</b>.</div>
+          <div class="badgeSymGrid">${symbolRows}</div>
+        </div>
 
         <div class="badgeSupport">
           <div class="badgeSupportTitle">☕ Support the project</div>
@@ -1329,6 +1669,16 @@ row._tf = tf;
       this._slideTitle = mkText("Title (required)", "__slide_title");
       this._slideEditor.appendChild(this._slideTitle);
 
+      this._slideTitleIcon = mkIconPicker("Title icon (optional)", "__slide_title_icon");
+      this._slideEditor.appendChild(this._slideTitleIcon);
+
+      this._slideTitleIconAlign = mkSelect("Title icon align", "__slide_title_icon_align", [
+        ["left", "Left"],
+        ["right", "Right"],
+      ]);
+      this._slideEditor.appendChild(this._slideTitleIconAlign);
+
+
       const secNum = mkSection("Numeric formatting (slide)");
       this._slideDecimals = mkText("Decimals (manual) (empty = keep original)", "__slide_decimals", "number", "");
       secNum.appendChild(this._slideDecimals);
@@ -1350,6 +1700,32 @@ row._tf = tf;
       this._slideTpl = mkText("Value template (use <value>)", "__slide_value_template", "text", "<value>");
       secTextTpl.appendChild(this._slideTpl);
       this._slideEditor.appendChild(secTextTpl);
+
+      // Dot-matrix progress bar
+      const secProg = mkSection("Dot-matrix progress bar (slide)");
+      const { wrap: pbWrap, sw: pbSw } = mkSwitch("Render numeric value as a progress bar (fills dots)", "__slide_matrix_progress");
+      this._slideMatrixProgress = pbSw;
+      secProg.appendChild(pbWrap);
+
+      this._slideProgMin = mkText("Progress min", "__slide_progress_min", "number", "0");
+      secProg.appendChild(this._slideProgMin);
+      this._slideProgMax = mkText("Progress max", "__slide_progress_max", "number", "100");
+      secProg.appendChild(this._slideProgMax);
+
+      this._slideEditor.appendChild(secProg);
+
+      const secSlideIntervals = mkSection("Color intervals (slide override)");
+      const intervalHead = document.createElement("div");
+      intervalHead.className = "rowHead";
+      const btnAdd = mkButton("Add", () => this._addSlideInterval());
+      intervalHead.appendChild(btnAdd);
+      secSlideIntervals.appendChild(intervalHead);
+
+      this._slideIntervalList = document.createElement("div");
+      this._slideIntervalList.className = "intervalList";
+      secSlideIntervals.appendChild(this._slideIntervalList);
+
+      this._slideEditor.appendChild(secSlideIntervals);
 
       const secSwitch = mkSection("Slide switch settings");
       this._slideStay = mkText("Stay seconds", "__slide_stay_s", "number", "3");
@@ -1491,6 +1867,27 @@ row._tf = tf;
           overflow:auto;
           max-height: 240px;
         }
+
+        .rowsList{
+          border: 1px solid rgba(0,0,0,0.12);
+          border-radius: 10px;
+          overflow:auto;
+          max-height: 200px;
+        }
+        .rowItem{
+          padding: 10px 12px;
+          cursor:pointer;
+          display:flex;
+          justify-content:space-between;
+          align-items:center;
+          gap: 12px;
+          border-bottom: 1px solid rgba(0,0,0,0.08);
+        }
+        .rowItem:last-child{ border-bottom:none; }
+        .rowItem.active{
+          background: color-mix(in srgb, var(--primary-color, #03A9F4) 18%, transparent);
+          font-weight: 800;
+        }
         .slideItem{
           padding: 10px 12px;
           cursor:pointer;
@@ -1546,7 +1943,62 @@ row._tf = tf;
           opacity: 0.95;
         }
 
-        .badgeSupport{
+        
+      .badgeSymHelp{
+        margin-top: 14px;
+        padding: 10px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(0,0,0,0.12);
+        background: rgba(0,0,0,0.03);
+      }
+      .badgeSymTitle{
+        font-weight: 800;
+        margin-bottom: 4px;
+      }
+      .badgeSymHint{
+        opacity: 0.85;
+        font-size: 0.92em;
+        margin-bottom: 10px;
+        line-height: 1.35;
+      }
+      .badgeSymGrid{
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+      .badgeSymRow{
+        display: grid;
+        grid-template-columns: 140px 1fr 60px;
+        gap: 10px;
+        align-items: center;
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: rgba(0,0,0,0.04);
+      }
+      .badgeSymKey code{
+        font-size: 0.95em;
+      }
+      .badgeSymLabel{
+        opacity: 0.9;
+      }
+      .badgeSymPreview svg.char{
+        height: 18px;
+        width: auto;
+        display: block;
+      }
+      .badgeSymPreview .dot.on{
+        fill: var(--asdc-dot-on, #00FF66);
+      }
+      .badgeSymPreview .dot.off{
+        fill: var(--asdc-dot-off, #221B1B);
+      }
+      @media (max-width: 520px){
+        .badgeSymRow{
+          grid-template-columns: 130px 1fr 52px;
+        }
+      }
+
+      .badgeSupport{
           margin-top: 12px;
           padding: 10px 10px;
           border-radius: 12px;
@@ -1642,11 +2094,36 @@ row._tf = tf;
       // Intervals + Slides
       this._renderIntervals();
 
+      if (!Array.isArray(this._config.rows) || this._config.rows.length === 0) {
+        const baseSlides = (Array.isArray(this._config.slides) && this._config.slides.length)
+          ? this._config.slides
+          : [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
+        this._config.rows = [{ slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      } else {
+        this._config.rows = this._config.rows.map(r => {
+          const slides = (Array.isArray(r?.slides) && r.slides.length)
+            ? r.slides
+            : [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
+          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+        });
+      }
+
+      if (typeof this._activeRow !== "number") this._activeRow = 0;
+      this._activeRow = clampInt(this._activeRow, 0, this._config.rows.length - 1);
+
+      // Present the currently selected row's slides in the existing slides editor
+      this._config.slides = this._config.rows[this._activeRow].slides;
+
       if (!Array.isArray(this._config.slides) || this._config.slides.length === 0) {
         this._config.slides = [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
+        this._config.rows[this._activeRow].slides = this._config.slides;
       }
+
       if (typeof this._activeSlide !== "number") this._activeSlide = 0;
       this._activeSlide = clampInt(this._activeSlide, 0, this._config.slides.length - 1);
+
+      this._renderRowsList();
+      this._syncRowButtons();
 
       this._renderSlidesList();
       this._syncSlideEditor();
@@ -1660,6 +2137,130 @@ row._tf = tf;
       this._btnDownSlide.disabled = (i >= n - 1);
       this._btnDelSlide.disabled = (n <= 1);
     }
+
+    _renderRowsList() {
+      this._rowsList.innerHTML = "";
+      const rows = Array.isArray(this._config.rows) ? this._config.rows : [];
+      rows.forEach((r, idx) => {
+        const item = document.createElement("div");
+        item.className = `rowItem ${idx === this._activeRow ? "active" : ""}`;
+        const isDef = !!r?.is_default;
+        const title = isDef ? "Row (default)" : `Row ${idx + 1}`;
+        const slidesCount = Array.isArray(r?.slides) ? r.slides.length : 0;
+        item.innerHTML = `<div>${title}<br><small>${slidesCount} slide${slidesCount === 1 ? "" : "s"}</small></div><div>›</div>`;
+        item.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          // Persist current edited slides back into current row before switching
+          if (Array.isArray(this._config.rows) && this._config.rows[this._activeRow]) {
+            this._config.rows[this._activeRow].slides = this._config.slides || [];
+          }
+          this._activeRow = idx;
+          this._activeSlide = 0;
+          // Switch top-level slides view to selected row
+          if (this._config.rows && this._config.rows[idx]) {
+            this._config.slides = this._config.rows[idx].slides || [];
+          }
+          this._sync();
+        });
+        this._rowsList.appendChild(item);
+      });
+    }
+
+    _syncRowButtons() {
+      const rows = Array.isArray(this._config.rows) ? this._config.rows : [];
+      const n = rows.length;
+      const idx = clampInt(this._activeRow || 0, 0, Math.max(0, n - 1));
+
+      const canMoveUp = n > 1 && idx > 0;
+      const canMoveDown = n > 1 && idx < n - 1;
+      const isDef = !!rows[idx]?.is_default;
+      const canDelete = n > 1 && !isDef;
+
+      this._btnUpRow.disabled = !canMoveUp;
+      this._btnDownRow.disabled = !canMoveDown;
+      this._btnDelRow.disabled = !canDelete;
+    }
+
+    _addRow() {
+      const next = { ...this._config };
+      // Ensure rows exists
+      let rows = Array.isArray(next.rows) && next.rows.length ? next.rows.map(r => ({ ...(r || {}), slides: (r?.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) })) : [];
+      if (!rows.length) {
+        rows = [{ is_default: true, slides: (next.slides || [{ ...DEFAULT_SLIDE }]).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      }
+      if (!rows.some(r => r && r.is_default)) rows[0].is_default = true;
+
+      // Persist current edited slides into active row
+      const ar = clampInt(this._activeRow || 0, 0, rows.length - 1);
+      rows[ar] = { ...(rows[ar] || {}), slides: (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+
+      // Create new row inheriting current row's slides
+      const inheritSlides = (rows[ar].slides && rows[ar].slides.length)
+        ? rows[ar].slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }))
+        : [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
+
+      rows.push({ is_default: false, slides: inheritSlides });
+
+      next.rows = rows;
+      // Switch active row to new row
+      this._activeRow = rows.length - 1;
+      this._activeSlide = 0;
+      next.slides = rows[this._activeRow].slides;
+
+      this._commitFull(next);
+    }
+
+    _moveRow(dir) {
+      const next = { ...this._config };
+      let rows = Array.isArray(next.rows) ? next.rows.map(r => ({ ...(r || {}), slides: (r?.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) })) : [];
+      if (!rows.length) return;
+
+      if (!rows.some(r => r && r.is_default)) rows[0].is_default = true;
+
+      const from = clampInt(this._activeRow || 0, 0, rows.length - 1);
+      const to = clampInt(from + dir, 0, rows.length - 1);
+      if (from === to) return;
+
+      // Persist current edited slides into active row before moving
+      rows[from] = { ...(rows[from] || {}), slides: (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+
+      const tmp = rows[from];
+      rows[from] = rows[to];
+      rows[to] = tmp;
+
+      next.rows = rows;
+      this._activeRow = to;
+      this._activeSlide = 0;
+      next.slides = rows[to].slides;
+
+      this._commitFull(next);
+    }
+
+    _deleteRow() {
+      const next = { ...this._config };
+      let rows = Array.isArray(next.rows) ? next.rows.map(r => ({ ...(r || {}), slides: (r?.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) })) : [];
+      if (rows.length <= 1) return;
+
+      if (!rows.some(r => r && r.is_default)) rows[0].is_default = true;
+
+      const idx = clampInt(this._activeRow || 0, 0, rows.length - 1);
+      if (rows[idx]?.is_default) return; // default row cannot be deleted
+
+      // Persist current edited slides into active row before deleting (if deleting another row we don't care, but safe)
+      rows[idx] = { ...(rows[idx] || {}), slides: (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+
+      rows.splice(idx, 1);
+      next.rows = rows;
+
+      this._activeRow = clampInt(Math.min(idx, rows.length - 1), 0, rows.length - 1);
+      this._activeSlide = 0;
+      next.slides = rows[this._activeRow].slides;
+
+      this._commitFull(next);
+    }
+
+
 
     _renderSlidesList() {
       this._slidesList.innerHTML = "";
@@ -1679,6 +2280,149 @@ row._tf = tf;
       });
     }
 
+
+    _addSlideInterval() {
+      const next = { ...this._config };
+      const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      const idx = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+      const s = { ...slides[idx] };
+
+      const list = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
+      list.push({
+        from: 0,
+        to: 0,
+        color: String(this._config.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase(),
+      });
+
+      s.color_intervals = list;
+      slides[idx] = s;
+      next.slides = slides;
+      this._commitFull(next);
+      this._sync();
+    }
+
+    _renderSlideIntervals() {
+      if (!this._slideIntervalList) return;
+      const slides = this._config.slides || [];
+      const s = slides[this._activeSlide] || { ...DEFAULT_SLIDE };
+      const intervals = Array.isArray(s.color_intervals) ? s.color_intervals : [];
+
+      const list = this._slideIntervalList;
+      list.innerHTML = "";
+
+      intervals.forEach((it, idx) => {
+        const row = document.createElement("div");
+        row.className = "intervalRow";
+
+        const from = document.createElement("ha-textfield");
+        from.label = "Value from";
+        from.type = "number";
+        from.value = (typeof it.from === "number" || typeof it.from === "string") ? String(it.from) : "";
+        from.dataset.slideIntervalIndex = String(idx);
+        from.dataset.slideIntervalKey = "from";
+        from.addEventListener("change", (e) => this._onSlideIntervalChange(e));
+        from.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
+        const to = document.createElement("ha-textfield");
+        to.label = "To";
+        to.type = "number";
+        to.value = (typeof it.to === "number" || typeof it.to === "string") ? String(it.to) : "";
+        to.dataset.slideIntervalIndex = String(idx);
+        to.dataset.slideIntervalKey = "to";
+        to.addEventListener("change", (e) => this._onSlideIntervalChange(e));
+        to.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
+        const colorRow = document.createElement("div");
+        colorRow.className = "colorRow";
+        const tf = document.createElement("ha-textfield");
+        tf.label = "Color";
+        tf.value = String(it.color || this._config.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
+        tf.dataset.slideIntervalIndex = String(idx);
+        tf.dataset.slideIntervalKey = "color";
+        tf.addEventListener("change", (e) => this._onSlideIntervalChange(e));
+        tf.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
+        const btn = document.createElement("input");
+        btn.type = "color";
+        btn.className = "colorBtn";
+        btn.value = (tf.value && /^#/.test(tf.value)) ? tf.value : "#000000";
+        btn.addEventListener("input", (e) => {
+          const v = String(e.target.value || "").toUpperCase();
+          tf.value = v;
+        });
+        btn.addEventListener("change", (e) => {
+          const v = String(e.target.value || "").toUpperCase();
+          tf.value = v;
+          this._setSlideIntervalValue(idx, "color", v, /*noSync*/ true);
+        });
+        colorRow.appendChild(tf);
+        colorRow.appendChild(btn);
+
+        const delTag = customElements.get("ha-button") ? "ha-button" : "mwc-button";
+        const del = document.createElement(delTag);
+        del.setAttribute("raised","");
+        del.classList.add("asdcBtn");
+        del.setAttribute("label","Delete");
+        del.textContent = "Delete";
+        del.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const next = { ...this._config };
+          const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+          const si = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+          const ss = { ...slides[si] };
+          const arr = Array.isArray(ss.color_intervals) ? [...ss.color_intervals] : [];
+          arr.splice(idx, 1);
+          ss.color_intervals = arr;
+          slides[si] = ss;
+          next.slides = slides;
+          this._commitFull(next);
+          this._sync();
+        });
+
+        row.appendChild(from);
+        row.appendChild(to);
+        row.appendChild(colorRow);
+        row.appendChild(del);
+        list.appendChild(row);
+      });
+    }
+
+    _onSlideIntervalChange(ev) {
+      const target = ev.target;
+      const idx = Number(target?.dataset?.slideIntervalIndex);
+      const key = String(target?.dataset?.slideIntervalKey || "");
+      if (!Number.isFinite(idx) || !key) return;
+
+      const raw = this._eventValue(ev, target);
+      if (key === "color") {
+        const norm = this._rowText._normalizeHex(raw, false);
+        if (norm === null) return;
+        this._setSlideIntervalValue(idx, key, norm, /*noSync*/ true);
+        return;
+      }
+
+      const num = (raw === "" || raw === null || typeof raw === "undefined") ? null : Number(raw);
+      const val = Number.isFinite(num) ? num : null;
+      this._setSlideIntervalValue(idx, key, val, /*noSync*/ true);
+    }
+
+    _setSlideIntervalValue(idx, key, value, noSync = false) {
+      const next = { ...this._config };
+      const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      const si = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+      const s = { ...slides[si] };
+      const intervals = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
+      const it = { ...(intervals[idx] || {}) };
+      it[key] = value;
+      intervals[idx] = it;
+      s.color_intervals = intervals;
+      slides[si] = s;
+      next.slides = slides;
+
+      this._commitFull(next);
+      if (!noSync) this._sync();
+    }
     _renderIntervals() {
       const list = this._intervalList;
       list.innerHTML = "";
@@ -1764,6 +2508,10 @@ row._tf = tf;
 
       this._slideTitle.value = s.title || "";
 
+      if (this._slideTitleIcon && this._hass) this._slideTitleIcon.hass = this._hass;
+      if (this._slideTitleIcon) this._slideTitleIcon.value = s.title_icon || "";
+      if (this._slideTitleIconAlign) this._slideTitleIconAlign.value = s.title_icon_align || "left";
+
       this._slideDecimals.value = (s.decimals === null || s.decimals === undefined) ? "" : String(s.decimals);
       this._slideAutoDecimals.value = (s.auto_decimals === null || s.auto_decimals === undefined) ? "" : String(s.auto_decimals);
 
@@ -1771,6 +2519,16 @@ row._tf = tf;
       this._slideShowUnit.checked = !!s.show_unit;
 
       this._slideTpl.value = s.value_template || "<value>";
+
+      // Dot-matrix progress bar (slide)
+      if (this._slideMatrixProgress) this._slideMatrixProgress.checked = !!s.matrix_progress;
+      if (this._slideProgMin) this._slideProgMin.value = String((s.progress_min ?? 0));
+      if (this._slideProgMax) this._slideProgMax.value = String((s.progress_max ?? 100));
+      if (this._slideProgMin && this._slideProgMin.closest(".section")) {
+        const stp = (this._config.render_style || "segment");
+        this._slideProgMin.closest(".section").style.display = (stp === "matrix") ? "" : "none";
+      }
+
 
       this._slideStay.value = String(s.stay_s ?? DEFAULT_SLIDE.stay_s);
       this._slideOut.value  = String(s.out_s ?? DEFAULT_SLIDE.out_s);
@@ -1798,12 +2556,27 @@ row._tf = tf;
       const tplDisabled = (st === "segment");
       this._slideTpl.disabled = tplDisabled;
       this._slideTpl.label = tplDisabled ? "Value template (not used in 7-segment)" : "Value template (use <value>)";
-    }
 
+      this._renderSlideIntervals();
+    }
     _commit(key, value) {
       const next = { ...(this._config || DEFAULTS_GLOBAL), ...(this._origType ? { type: this._origType } : {}), [key]: value };
-      next.slides = this._config.slides || [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
       next.color_intervals = this._config.color_intervals || [];
+
+      // Preserve / normalize rows
+      if (!Array.isArray(this._config.rows) || this._config.rows.length === 0) {
+        const baseSlides = this._config.slides || [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+        next.rows = [{ slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      } else {
+        next.rows = this._config.rows.map(r => {
+          const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+        });
+      }
+
+      // Canonical top-level slides mirrors Row 1
+      next.slides = next.rows[0].slides;
+
       this._config = next;
 
       this.dispatchEvent(new CustomEvent("config-changed", {
@@ -1815,6 +2588,37 @@ row._tf = tf;
 
     _commitFull(nextConfig) {
       if (this._origType && !nextConfig.type) nextConfig.type = this._origType;
+
+      // Ensure rows exist
+      let rows = [];
+      if (Array.isArray(nextConfig.rows) && nextConfig.rows.length) {
+        rows = nextConfig.rows.map(r => {
+          const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+        });
+      } else {
+        const baseSlides = (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
+          ? nextConfig.slides
+          : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+        rows = [{ is_default: true, slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      }
+
+      // Ensure exactly one default row flag exists (movable but not deletable)
+      if (!rows.some(r => r && r.is_default)) {
+        if (rows[0]) rows[0].is_default = true;
+      }
+      const ar = clampInt(this._activeRow || 0, 0, rows.length - 1);
+      const activeSlides = (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
+        ? nextConfig.slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }))
+        : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+
+      rows[ar] = { ...(rows[ar] || {}), slides: activeSlides };
+      nextConfig.rows = rows;
+
+      // Canonical top-level slides mirrors Row 1 (backward compatibility)
+      const defRow = rows.find(r => r && r.is_default) || rows[0];
+      nextConfig.slides = (defRow && Array.isArray(defRow.slides)) ? defRow.slides : rows[0].slides;
+
       this._config = nextConfig;
       this.dispatchEvent(new CustomEvent("config-changed", {
         detail: { config: nextConfig },
@@ -1900,6 +2704,31 @@ row._tf = tf;
         this._slideCommitField("title", String(v || ""));
         return;
       }
+
+      if (key === "__slide_title_icon") {
+        this._slideCommitField("title_icon", String(v || ""));
+        return;
+      }
+
+      if (key === "__slide_title_icon_align") {
+        const vv = (v === "right") ? "right" : "left";
+        this._slideCommitField("title_icon_align", vv);
+        return;
+      }
+
+      if (key === "__slide_matrix_progress") {
+        this._slideCommitField("matrix_progress", !!target.checked);
+        return;
+      }
+
+      if (key === "__slide_progress_min" || key === "__slide_progress_max") {
+        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
+        const val = Number.isFinite(num) ? num : null;
+        const field = (key === "__slide_progress_min") ? "progress_min" : "progress_max";
+        this._slideCommitField(field, (val === null ? (field === "progress_min" ? 0 : 100) : val));
+        return;
+      }
+
 
       if (key === "__slide_decimals" || key === "__slide_auto_decimals") {
         const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
