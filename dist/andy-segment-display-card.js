@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.4
+ * v2.0.5
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,12 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.0.5 - 2026-02-06
+ * Added support for GAP between title and Icon
+ * Added Color pickir for Title aand Icon
+ * Added interval color selection on progressbar (show all or active interval)
+ *
+ *
  * 2.0.4 - 2026-02-06
  * Added Multiple ROW Support! 
  * Added support for special characters
@@ -65,7 +71,7 @@
 
 (() => {
   
-  const CARD_VERSION = "2.0.4";
+  const CARD_VERSION = "2.0.5";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -131,6 +137,9 @@ console.info(
     title: "",
     title_icon: "",
     title_icon_align: "left",
+    title_icon_gap: 6,
+    title_text_color: "",
+    title_icon_color: "",
 
     // Numeric formatting
     decimals: null,      // manual (wins over auto_decimals)
@@ -148,6 +157,7 @@ console.info(
     matrix_progress: false,
     progress_min: 0,
     progress_max: 100,
+    progress_color_mode: "active", // active | intervals
 
     // Slide switching
     stay_s: 3,
@@ -448,17 +458,21 @@ function toDisplayString(stateObj, cfg) {
 }
 
 
-function setTitleWithIcon(titleEl, text, icon, align) {
+function setTitleWithIcon(titleEl, text, icon, align, gapPx, textColor, iconColor) {
   titleEl.innerHTML = "";
   titleEl.classList.toggle("asdc-title-has-icon", !!icon);
   titleEl.classList.toggle("asdc-title-icon-right", (align === "right"));
+  const gap = (typeof gapPx === "number" && isFinite(gapPx)) ? gapPx : 6;
+  titleEl.style.gap = `${gap}px`;
   const span = document.createElement("span");
   span.className = "asdc-title-text";
   span.textContent = text || "";
+  if (textColor) span.style.color = textColor;
   if (icon) {
     const ic = document.createElement("ha-icon");
     ic.setAttribute("icon", icon);
     ic.className = "asdc-title-icon";
+    if (iconColor) ic.style.color = iconColor;
     if (align === "right") {
       titleEl.appendChild(span);
       titleEl.appendChild(ic);
@@ -544,6 +558,16 @@ function svgForMatrixChar(ch, cfg) {
     </svg>
   `;
 }
+
+// Same as svgForMatrixChar, but applies an inline CSS variable override for dot-on color on the SVG root.
+// This avoids any HTML->SVG custom property inheritance quirks in some browsers.
+function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
+  const svg = svgForMatrixChar(ch, cfg);
+  if (!dotOnOverride) return svg;
+  // Inject style attribute on the <svg ...> element so the variable lives inside the SVG tree
+  return svg.replace('<svg class="char matrix"', `<svg class="char matrix" style="--asdc-dot-on:${dotOnOverride};"`);
+}
+
 
   // -------------------- Color interval helper --------------------
   function pickIntervalColor(intervals, n) {
@@ -923,6 +947,7 @@ function svgForMatrixChar(ch, cfg) {
                 --mdc-icon-size: 18px;
                 opacity: 0.95;
               }
+              .asdc-pcell{display:inline-block;}
                 padding: 0 0 6px 0;
                 font-size: 14px;
                 opacity: 0.9;
@@ -1138,9 +1163,9 @@ function svgForMatrixChar(ch, cfg) {
 
         // Row title (per row)
         let titleText = (cfg.show_title !== false) ? (slide.title || "") : "";
-        if (titleText) {
+        if (titleText || (slide?.title_icon)) {
           if (String(titleText).includes("<")) titleText = applyTemplate(titleText, vars);
-          setTitleWithIcon(els.title, titleText, (slide?.title_icon || ""), (slide?.title_icon_align || "left"));
+          setTitleWithIcon(els.title, titleText, (slide?.title_icon || ""), (slide?.title_icon_align || "left"), (slide?.title_icon_gap ?? 6), (slide?.title_text_color || ""), (slide?.title_icon_color || ""));
           els.title.style.display = "flex";
         } else {
           els.title.textContent = "";
@@ -1189,15 +1214,80 @@ function svgForMatrixChar(ch, cfg) {
             });
 
           } else {
-            const chars = displayStr
-              .split("")
-              .map((ch) => {
-                if (style === "segment") return svgForSegmentChar(ch, cfg);
-                return svgForMatrixChar(ch, cfg);
-              })
-              .join("");
+            let html = null;
 
-            els.display.innerHTML = chars;
+
+            // Dot-matrix progress bar: optionally color each filled cell by interval scale
+
+            if (style === "matrix" && slide?.matrix_progress && (slide.progress_color_mode || "active") === "intervals") {
+
+              const nVal = toNumberOrNull(stateObj);
+
+              const minV = Number(slide.progress_min ?? 0);
+
+              const maxV = Number(slide.progress_max ?? 100);
+
+              const lo = Number.isFinite(minV) ? minV : 0;
+
+              const hi = (Number.isFinite(maxV) && maxV !== lo) ? maxV : (lo + 100);
+
+              const eff = this._effectiveMaxChars("");
+
+              const pct = (nVal === null) ? 0 : Math.max(0, Math.min(1, (nVal - lo) / (hi - lo)));
+
+              const filled = Math.max(0, Math.min(eff, Math.round(pct * eff)));
+
+              const intervals = (Array.isArray(slide.color_intervals) && slide.color_intervals.length) ? slide.color_intervals : (cfg.color_intervals || []);
+
+              const fullCh = MATRIX_ICON_TOKENS.full;
+
+              let out = "";
+
+              for (let i = 0; i < eff; i++) {
+
+                if (i < filled) {
+
+                  const sample = lo + ((i + 0.5) / eff) * (hi - lo);
+
+                  const col = pickIntervalColor(intervals, sample) || (cfg.text_color || "#00FF66");
+
+                  out += svgForMatrixCharColored(fullCh, cfg, col);
+
+                } else {
+
+                  out += svgForMatrixChar(" ", cfg);
+
+                }
+
+              }
+
+              html = out;
+
+            }
+
+
+            if (html === null) {
+
+              const chars = displayStr
+
+                .split("")
+
+                .map((ch) => {
+
+                  if (style === "segment") return svgForSegmentChar(ch, cfg);
+
+                  return svgForMatrixChar(ch, cfg);
+
+                })
+
+                .join("");
+
+              html = chars;
+
+            }
+
+
+            els.display.innerHTML = html;
             els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
           }
         }
@@ -1679,6 +1769,43 @@ row._tf = tf;
       this._slideEditor.appendChild(this._slideTitleIconAlign);
 
 
+      this._slideTitleIconGap = mkText("Title icon gap (px)", "__slide_title_icon_gap", "number", "6");
+      this._slideEditor.appendChild(this._slideTitleIconGap);
+
+      const mkSlideColor = (label, key, allowEmpty = true) => {
+        const row = document.createElement("div");
+        row.className = "colorRow";
+
+        const tf = document.createElement("ha-textfield");
+        tf.label = label;
+        tf.type = "text";
+        tf.placeholder = allowEmpty ? "(empty = default)" : "#RRGGBB";
+        tf.configValue = key;
+
+        tf.addEventListener("input", (e) => this._onChange(e));
+        tf.addEventListener("change", (e) => this._onChange(e));
+        tf.addEventListener("value-changed", (e) => this._onChange(e));
+
+        const btn = document.createElement("input");
+        btn.type = "color";
+        btn.className = "colorBtn";
+        btn.addEventListener("input", (e) => {
+          tf.value = String(e.target.value || "");
+          this._onChange({ target: tf });
+        });
+
+        row.appendChild(tf);
+        row.appendChild(btn);
+        return row;
+      };
+
+      this._slideTitleTextColor = mkSlideColor("Title text color (optional)", "__slide_title_text_color", true);
+      this._slideEditor.appendChild(this._slideTitleTextColor);
+
+      this._slideTitleIconColor = mkSlideColor("Title icon color (optional)", "__slide_title_icon_color", true);
+      this._slideEditor.appendChild(this._slideTitleIconColor);
+
+
       const secNum = mkSection("Numeric formatting (slide)");
       this._slideDecimals = mkText("Decimals (manual) (empty = keep original)", "__slide_decimals", "number", "");
       secNum.appendChild(this._slideDecimals);
@@ -1711,6 +1838,12 @@ row._tf = tf;
       secProg.appendChild(this._slideProgMin);
       this._slideProgMax = mkText("Progress max", "__slide_progress_max", "number", "100");
       secProg.appendChild(this._slideProgMax);
+
+      this._slideProgColorMode = mkSelect("Progressbar colors", "__slide_progress_color_mode", [
+        ["active", "Use active interval color"],
+        ["intervals", "Use all interval colors"],
+      ]);
+      secProg.appendChild(this._slideProgColorMode);
 
       this._slideEditor.appendChild(secProg);
 
@@ -2512,6 +2645,24 @@ row._tf = tf;
       if (this._slideTitleIcon) this._slideTitleIcon.value = s.title_icon || "";
       if (this._slideTitleIconAlign) this._slideTitleIconAlign.value = s.title_icon_align || "left";
 
+      if (this._slideTitleIconGap) this._slideTitleIconGap.value = (s.title_icon_gap === null || s.title_icon_gap === undefined) ? "6" : String(s.title_icon_gap);
+
+      if (this._slideTitleTextColor) {
+        const tf = this._slideTitleTextColor.querySelector("ha-textfield");
+        const btn = this._slideTitleTextColor.querySelector("input[type=color]");
+        const val = s.title_text_color || "";
+        if (tf) tf.value = val;
+        if (btn && /^#([0-9a-f]{6})$/i.test(val)) btn.value = val;
+      }
+
+      if (this._slideTitleIconColor) {
+        const tf = this._slideTitleIconColor.querySelector("ha-textfield");
+        const btn = this._slideTitleIconColor.querySelector("input[type=color]");
+        const val = s.title_icon_color || "";
+        if (tf) tf.value = val;
+        if (btn && /^#([0-9a-f]{6})$/i.test(val)) btn.value = val;
+      }
+
       this._slideDecimals.value = (s.decimals === null || s.decimals === undefined) ? "" : String(s.decimals);
       this._slideAutoDecimals.value = (s.auto_decimals === null || s.auto_decimals === undefined) ? "" : String(s.auto_decimals);
 
@@ -2524,6 +2675,7 @@ row._tf = tf;
       if (this._slideMatrixProgress) this._slideMatrixProgress.checked = !!s.matrix_progress;
       if (this._slideProgMin) this._slideProgMin.value = String((s.progress_min ?? 0));
       if (this._slideProgMax) this._slideProgMax.value = String((s.progress_max ?? 100));
+      if (this._slideProgColorMode) this._slideProgColorMode.value = s.progress_color_mode || "active";
       if (this._slideProgMin && this._slideProgMin.closest(".section")) {
         const stp = (this._config.render_style || "segment");
         this._slideProgMin.closest(".section").style.display = (stp === "matrix") ? "" : "none";
@@ -2637,6 +2789,11 @@ row._tf = tf;
       const key = target.configValue || target.dataset?.configValue;
       if (!key) return;
 
+      // Route slide-scoped editor fields through the slide handler
+      if (String(key).startsWith("__slide_")) {
+        return this._onSlideChange(String(key), ev);
+      }
+
       if (typeof target.checked !== "undefined") {
         if (key === "italic" || key === "center_text" || key === "show_unused" || key === "show_title") {
           return this._commit(key, !!target.checked);
@@ -2715,6 +2872,30 @@ row._tf = tf;
         this._slideCommitField("title_icon_align", vv);
         return;
       }
+      if (key === "__slide_title_icon_gap") {
+        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
+        const val = Number.isFinite(num) ? num : 6;
+        this._slideCommitField("title_icon_gap", val);
+        return;
+      }
+
+      if (key === "__slide_title_text_color") {
+        this._slideCommitField("title_text_color", String(v || ""));
+        return;
+      }
+
+      if (key === "__slide_title_icon_color") {
+        this._slideCommitField("title_icon_color", String(v || ""));
+        return;
+      }
+
+      if (key === "__slide_progress_color_mode") {
+        const vv = (v === "intervals" || v === "all") ? "intervals" : "active";
+        this._slideCommitField("progress_color_mode", vv);
+        return;
+      }
+
+
 
       if (key === "__slide_matrix_progress") {
         this._slideCommitField("matrix_progress", !!target.checked);
