@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.5
+ * v2.0.6
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,12 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.0.6 - 2025-02-07
+ * Added support for Timer entity, such as Remaining time. Attribute to shown via dropdown if entity = timer.
+ * Added new Dot Matrix symbols: House, lightniing, lightbulb, battery
+ * Added support for showing % and # in dot matrix
+ *
+ *
  * 2.0.5 - 2026-02-06
  * Added support for GAP between title and Icon
  * Added Color pickir for Title aand Icon
@@ -71,7 +77,7 @@
 
 (() => {
   
-  const CARD_VERSION = "2.0.5";
+  const CARD_VERSION = "2.0.6";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -133,6 +139,7 @@ console.info(
 
   const DEFAULT_SLIDE = {
   animate_single: false,
+    timer_mode: "",
     entity: "",
     title: "",
     title_icon: "",
@@ -198,6 +205,8 @@ const FONT_5X7 = {
   "_": [0,0,0,0,0,0,31],
   ".": [0,0,0,0,0,12,12],
   ":": [0,12,12,0,12,12,0],
+  "%": [25,26,4,8,22,6,0],
+  "#": [10,31,10,31,10,10,0],
   "/": [1,2,4,8,16,0,0],
   "\\":[16,8,4,2,1,0,0],
 
@@ -250,6 +259,10 @@ const FONT_5X7 = {
   "h": [16,16,30,17,17,17,17],
   "w": [17,17,17,21,21,21,10],
 
+  "": [4,14,31,6,12,8,0],
+  "": [4,14,21,31,17,17,0],
+  "": [31,17,17,17,31,4,0],
+  "": [14,17,17,14,4,14,0],
 };
 
 // FONT_5X7_LOWERCASE_FALLBACK: map missing a-z to A-Z glyphs (keeps unit casing from HA)
@@ -292,6 +305,10 @@ const MATRIX_ICON_TOKENS = Object.freeze({
   fog: "\uE00B",
   cloud_moon: "\uE00A",
   sun_cloud: "\uE008",
+  lightning: "",
+  house: "",
+  battery: "",
+  lightbulb: ""
 });
 
 // Minimal 5x7 glyphs for the tokens above.
@@ -365,13 +382,39 @@ function formatRel(ts) {
     return sec >= 0 ? `${s} ago` : `in ${s}`;
   } catch (e) { return ""; }
 }
+
+function parseHmsToSeconds(hms) {
+  if (hms === undefined || hms === null) return null;
+  const s = String(hms).trim();
+  if (!s) return null;
+  const parts = s.split(":").map(p => p.trim());
+  if (!parts.length || parts.some(p => p === "" || !Number.isFinite(Number(p)))) return null;
+  let sec = 0;
+  if (parts.length === 3) sec = Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
+  else if (parts.length === 2) sec = Number(parts[0]) * 60 + Number(parts[1]);
+  else if (parts.length === 1) sec = Number(parts[0]);
+  else return null;
+  return Number.isFinite(sec) ? Math.max(0, Math.floor(sec)) : null;
+}
+function formatSecondsHMS(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const mm = String(m).padStart(2, "0");
+  const sss = String(ss).padStart(2, "0");
+  if (h > 0) return `${h}:${mm}:${sss}`;
+  // mm:ss (with leading 0 minutes)
+  return `${m}:${sss}`.padStart(4, "0");
+}
+
 function applyTemplate(tpl, vars) {
   const t = String(tpl ?? "<value>");
   return t.replace(/<attr:([^>]+)>/g, (_, k) => {
     const key = String(k || "").trim();
     const v = vars?.attr?.[key];
     return (v === undefined || v === null) ? "" : String(v);
-  }).replace(/<(degree|x|stop|rain|rain_huge|ip|full|calendar|windows|clouds|cloud|door|female|snowflake|key|male|alarm|clock|garbage|info|moon|message|reminder|wifi|thunderstorm|sun|fog|cloud_moon|sun_cloud)>/g, (_, n) => {
+  }).replace(/<(degree|x|stop|rain|rain_huge|ip|full|calendar|windows|clouds|cloud|door|female|snowflake|key|male|alarm|clock|garbage|info|moon|message|reminder|wifi|thunderstorm|sun|fog|cloud_moon|sun_cloud|lightning|house|battery|lightbulb)>/g, (_, n) => {
     return MATRIX_ICON_TOKENS?.[String(n)] ?? "";
   }).replaceAll("<value>", String(vars.value ?? ""))
     .replaceAll("<state>", String(vars.state ?? ""))
@@ -436,11 +479,10 @@ function toDisplayString(stateObj, cfg) {
   // Segment mode: keep digits + dot + minus + a few letters (for units)
   if ((cfg.render_style || "segment") === "segment") {
     s = s
-      .replace(",", ".")
       .split("")
       .map((ch) => {
         if (ch >= "0" && ch <= "9") return ch;
-        if (ch === "." || ch === "-") return ch;
+        if (ch === "." || ch === "," || ch === ":" || ch === "-") return ch;
 
         const up = String(ch).toUpperCase();
         if (up === "C" || up === "F" || up === "L" || up === "I") return up;
@@ -486,6 +528,7 @@ function setTitleWithIcon(titleEl, text, icon, align, gapPx, textColor, iconColo
 }
 /* -------- 7-segment rendering -------- */
 function svgForSegmentChar(ch, cfg) {
+  // Punctuation / indicator chars for 7-segment
   if (ch === ".") {
     return `
       <svg class="char dot" viewBox="0 0 60 120" aria-hidden="true">
@@ -494,7 +537,26 @@ function svgForSegmentChar(ch, cfg) {
     `;
   }
 
+  if (ch === ",") {
+    return `
+      <svg class="char dot" viewBox="0 0 60 120" aria-hidden="true">
+        <circle class="seg on" cx="45" cy="105" r="8"></circle>
+        <rect class="seg on" x="41" y="110" width="8" height="10" rx="3"></rect>
+      </svg>
+    `;
+  }
+
+  if (ch === ":") {
+    return `
+      <svg class="char dot" viewBox="0 0 60 120" aria-hidden="true">
+        <circle class="seg on" cx="30" cy="45" r="8"></circle>
+        <circle class="seg on" cx="30" cy="75" r="8"></circle>
+      </svg>
+    `;
+  }
+
   const seg = SEGMENTS[ch] || SEGMENTS[" "];
+
 
   const paths = [
     `<rect class="seg a" x="12" y="8"  width="36" height="10" rx="5" ry="5"></rect>`,
@@ -756,6 +818,11 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           timer: 0,
           isSwitching: false,
           lastText: null,
+          liveTimer: 0,
+          liveMode: null,
+          liveFinishesAt: 0,
+          liveRemainingBase: 0,
+          liveStartMs: 0,
         });
       }
       if (this._rowStates.length > count) {
@@ -763,6 +830,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         for (let i = count; i < this._rowStates.length; i++) {
           const st = this._rowStates[i];
           if (st?.timer) clearTimeout(st.timer);
+        if (st?.liveTimer) clearInterval(st.liveTimer);
         }
         this._rowStates.length = count;
       }
@@ -771,6 +839,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
     _clearAllTimers() {
       (this._rowStates || []).forEach(st => {
         if (st?.timer) clearTimeout(st.timer);
+        if (st?.liveTimer) clearInterval(st.liveTimer);
         if (st) {
           st.timer = 0;
           st.isSwitching = false;
@@ -786,6 +855,51 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       }
       if (st) st.isSwitching = false;
     }
+    _clearRowLiveTimer(rowIndex) {
+      const st = this._rowStates[rowIndex];
+      if (st?.liveTimer) {
+        clearInterval(st.liveTimer);
+        st.liveTimer = 0;
+      }
+      if (st) {
+        st.liveMode = null;
+        st.liveFinishesAt = 0;
+        st.liveRemainingBase = 0;
+        st.liveStartMs = 0;
+      }
+    }
+
+    _ensureRowLiveTimer(rowIndex, stateObj, mode) {
+      const st = this._rowStates[rowIndex];
+      if (!st) return;
+
+      const domain = ((stateObj?.entity_id || "") || "").split(".")[0] || "";
+      if (domain !== "timer" || (mode !== "remaining" && mode !== "finishes_in")) {
+        this._clearRowLiveTimer(rowIndex);
+        return;
+      }
+
+      const active = (stateObj?.state === "active");
+      if (!active) {
+        this._clearRowLiveTimer(rowIndex);
+        return;
+      }
+
+      const finRaw = stateObj?.attributes?.finishes_at;
+      const finMs = finRaw ? new Date(finRaw).getTime() : 0;
+      const baseRem = parseHmsToSeconds(stateObj?.attributes?.remaining);
+
+      if (st.liveTimer && st.liveMode === mode && st.liveFinishesAt === finMs) return;
+
+      this._clearRowLiveTimer(rowIndex);
+      st.liveMode = mode;
+      st.liveFinishesAt = finMs;
+      st.liveRemainingBase = baseRem || 0;
+      st.liveStartMs = Date.now();
+
+      st.liveTimer = setInterval(() => this._scheduleRender(), 1000);
+    }
+
 
     _resetScheduler(force) {
       const rows = this._getRows();
@@ -902,7 +1016,19 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
 
     _computeActiveTextColor(stateObj, slide) {
       const cfg = this._config;
-      const n = toNumberOrNull(stateObj);
+      let n = toNumberOrNull(stateObj);
+      const domain = (slide?.entity || "").split(".")[0] || "";
+      if (domain === "timer" && stateObj) {
+        const mode = String(slide?.timer_mode || "remaining");
+        if (mode === "remaining" || mode === "finishes_in") {
+          const finMs = stateObj.attributes?.finishes_at ? new Date(stateObj.attributes.finishes_at).getTime() : 0;
+          const remAttrS = parseHmsToSeconds(stateObj.attributes?.remaining);
+          n = finMs ? Math.max(0, Math.round((finMs - Date.now()) / 1000)) : (remAttrS === null ? null : remAttrS);
+        } else if (mode === "duration") {
+          const durS = parseHmsToSeconds(stateObj.attributes?.duration);
+          n = (durS === null) ? null : durS;
+        }
+      }
       const intervals = (slide && Array.isArray(slide.color_intervals) && slide.color_intervals.length) ? slide.color_intervals : cfg.color_intervals;
       const intervalColor = (n === null) ? null : pickIntervalColor(intervals, n);
       return (intervalColor || cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
@@ -1079,7 +1205,46 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           max_chars: 999, // no truncation here
         };
 
+        
         let valueStr = toDisplayString(stateObj, mergedForValue);
+
+        // Timer entity support (per slide)
+        const domain = (slide.entity || "").split(".")[0] || "";
+        const timerMode = String(slide.timer_mode || "").trim(); // remaining|duration|finishes_at|finishes_in|state
+        if (domain === "timer" && stateObj) {
+          const mode = timerMode || "remaining";
+          this._ensureRowLiveTimer(rowIndex, stateObj, mode);
+
+          const durS = parseHmsToSeconds(stateObj.attributes?.duration);
+          const remAttrS = parseHmsToSeconds(stateObj.attributes?.remaining);
+          const finMs = stateObj.attributes?.finishes_at ? new Date(stateObj.attributes.finishes_at).getTime() : 0;
+
+          let remS = remAttrS;
+          if (finMs && Number.isFinite(finMs)) {
+            remS = Math.max(0, Math.round((finMs - Date.now()) / 1000));
+          } else if (remAttrS !== null) {
+            const stLive = this._rowStates[rowIndex];
+            if (stLive && stLive.liveStartMs) {
+              const elapsed = Math.round((Date.now() - stLive.liveStartMs) / 1000);
+              remS = Math.max(0, (stLive.liveRemainingBase || remAttrS || 0) - elapsed);
+            }
+          }
+
+          if (mode === "duration") {
+            valueStr = (durS === null) ? (stateObj.attributes?.duration ?? "") : formatSecondsHMS(durS);
+          } else if (mode === "finishes_at") {
+            valueStr = finMs ? formatTimeLocal(new Date(finMs).toISOString()) : String(stateObj.attributes?.finishes_at ?? "");
+          } else if (mode === "finishes_in" || mode === "remaining") {
+            valueStr = (remS === null) ? String(stateObj.attributes?.remaining ?? "") : formatSecondsHMS(remS);
+          } else if (mode === "state") {
+            valueStr = String(stateObj.state ?? "");
+          } else {
+            valueStr = (remS === null) ? String(stateObj.attributes?.remaining ?? "") : formatSecondsHMS(remS);
+          }
+        } else {
+          this._clearRowLiveTimer(rowIndex);
+        }
+
 
         const vars = {
           value: valueStr,
@@ -1125,6 +1290,15 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           displayStr = fullCh.repeat(filled) + " ".repeat(Math.max(0, eff - filled));
         }
 
+
+
+        // If there's nothing to show (e.g. timer not started / unknown), keep the display width by rendering blanks
+        // so "unused segments/dots" can still be visible (7-seg: faint segments, matrix: off dots).
+        if (((cfg.render_style || "matrix") === "segment" || (cfg.render_style || "matrix") === "matrix") &&
+            (!displayStr || String(displayStr).trim() === "")) {
+          const __mc = clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40);
+          displayStr = " ".repeat(__mc);
+        }
 
         const effMax = this._effectiveMaxChars(displayStr);
         if (displayStr.length > effMax) displayStr = displayStr.slice(displayStr.length - effMax);
@@ -1699,6 +1873,10 @@ row._tf = tf;
         ["cloud_moon", "cloud and moon"],
         ["sun_cloud", "sun and cloud"],
         ["degree", "degree symbol"],
+        ["lightning", "lightning bolt"],
+        ["house", "house"],
+        ["battery", "battery"],
+        ["lightbulb", "lightbulb"],
       ];
 
       const symCfg = {
@@ -1827,6 +2005,18 @@ row._tf = tf;
       this._slideTpl = mkText("Value template (use <value>)", "__slide_value_template", "text", "<value>");
       secTextTpl.appendChild(this._slideTpl);
       this._slideEditor.appendChild(secTextTpl);
+
+
+      const secTimer = mkSection("Timer (slide)");
+      this._slideTimerMode = mkSelect("Timer display", "__slide_timer_mode", [
+        ["remaining", "Remaining (counts down)"],
+        ["duration", "Total duration"],
+        ["finishes_at", "Finishes at (local time)"],
+        ["finishes_in", "Finishes in (same as remaining)"],
+        ["state", "State (idle/active/paused)"],
+      ]);
+      secTimer.appendChild(this._slideTimerMode);
+      this._slideEditor.appendChild(secTimer);
 
       // Dot-matrix progress bar
       const secProg = mkSection("Dot-matrix progress bar (slide)");
@@ -2670,6 +2860,12 @@ row._tf = tf;
       this._slideShowUnit.checked = !!s.show_unit;
 
       this._slideTpl.value = s.value_template || "<value>";
+      const isTimer = (String(s.entity || "").split(".")[0] === "timer");
+      if (this._slideTimerMode) {
+        this._slideTimerMode.value = String(s.timer_mode || (isTimer ? "remaining" : "remaining"));
+        this._slideTimerMode.disabled = !isTimer;
+      }
+
 
       // Dot-matrix progress bar (slide)
       if (this._slideMatrixProgress) this._slideMatrixProgress.checked = !!s.matrix_progress;
@@ -2854,6 +3050,13 @@ row._tf = tf;
           const autoTitle = friendly || (v ? String(v).split(".").slice(1).join(".").replaceAll("_"," ") : `Slide ${idx+1}`);
           this._slideCommitField("title", autoTitle);
         }
+        return;
+      }
+
+      if (key === "__slide_timer_mode") {
+        const vv = String(v || "remaining");
+        const ok = ["remaining","duration","finishes_at","finishes_in","state"];
+        this._slideCommitField("timer_mode", ok.includes(vv) ? vv : "remaining");
         return;
       }
 
