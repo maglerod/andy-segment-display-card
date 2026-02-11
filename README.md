@@ -1,8 +1,9 @@
-# Andy Segment Display Card V2.0.4
+# Andy Segment Display Card V2.0.5
 
 ### 7-segment mode (numeric) Dot-matrix mode (text) & Plain text
 ![Preview of display](Images/segment-display-card.png)
-![Preview of progressbar](Images/rowsprogress.png)
+![Preview of progressbar1](Images/segmentrows.png)
+![Preview of progressbar2](Images/rowsprogress.png)
 ![Preview of slides](Images/slides.png)
 ![Visual editor](Images/segment-display-card-configeditor_1.png)
 
@@ -34,6 +35,17 @@ Features:
 
 - Safe multi-card usage:
 - Instance-scoped CSS prevents multiple cards from affecting each other
+
+## v2.0.5
+- Added Title + Icon inline (same row) as value / progressbar
+- Added reserve title + icon space if Inline
+- Added segment GAP setting
+- Color intervals match value or number
+- Added several dot matrix symbols
+- Showing unused segments in both 7-segment and Dot Matrix mode
+- Added "fixed" segments in animation, smoother animation
+- Optimisation of animation loops
+
 
 ## v2.0.4
 - Added Multiple ROW Support! 
@@ -165,3 +177,102 @@ matrix_rows: 7
 matrix_gap: 2
 
 ```
+
+
+#### Segments with progressbar example
+```yaml
+type: custom:andy-segment-display-card
+render_style: matrix
+size_px: 12
+italic: false
+center_text: true
+show_title: true
+background_color: "#0B0F0C"
+text_color: "#00FF66"
+title_color: ""
+matrix_dot_off_color: "#221B1B"
+matrix_dot_on_color: ""
+show_unused: true
+unused_color: "#2A2F2C"
+max_chars: 20
+color_intervals:
+
+from: 0
+to: 20
+color: "#FF0000"
+from: 20
+to: 30
+color: "#FF9500"
+from: 30
+to: 70
+color: "#F7FB09"
+from: 70
+to: 100
+color: "#00FF66"
+matrix_cols: 5
+matrix_rows: 7
+matrix_gap: 2
+segment_gap_px: 6
+title_inline: false
+title_inline_width: 160
+rows:
+slides:
+animate_single: false
+timer_mode: remaining
+entity: sensor.andypandypro_watch_battery_level
+title: EV1
+title_icon: mdi:car-battery
+title_icon_align: left
+title_icon_gap: 14
+title_text_color: "#cef604"
+title_icon_color: "#ffc800"
+decimals: null
+auto_decimals: null
+leading_zero: true
+show_unit: false
+color_intervals: []
+value_template:
+matrix_progress: true
+progress_min: 0
+progress_max: 100
+progress_color_mode: intervals
+stay_s: 3
+out_s: 0.5
+in_s: 0.5
+fade: false
+show_style: run_left
+hide_style: run_right
+hide_prev_first: false
+is_default: true
+is_default: false
+slides:
+animate_single: false
+timer_mode: ""
+entity: sensor.andypandypro_battery_level
+title: EV2
+title_icon: mdi:car-battery
+title_icon_align: left
+title_icon_gap: 6
+title_text_color: "#d3fb09"
+title_icon_color: "#ffc800"
+decimals: 0
+auto_decimals: null
+leading_zero: true
+show_unit: false
+color_intervals: []
+value_template:
+matrix_progress: true
+progress_min: 0
+progress_max: 100
+progress_color_mode: intervals
+stay_s: 3
+out_s: 0.5
+in_s: 0.5
+fade: true
+show_style: run_left
+hide_style: run_right
+hide_prev_first: true
+
+```
+
+
