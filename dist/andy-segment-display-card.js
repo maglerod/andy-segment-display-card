@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.6
+ * v2.0.7
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,18 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ *
+ * 2.0.7 - 2025-02-211
+ * Added Title + Icon inline (same row) as value / progressbar
+ * Added reserve title + icon space if Inline
+ * Added segment GAP setting
+ * Color intervals match value or number
+ * Added several dot matrix symbols
+ * Showing unused segments in both 7-segment and Dot Matrix mode
+ * Added "fixed" segments in animation, smoother animation
+ * Optimisation of animation loops
+ *
+ *
  * 2.0.6 - 2025-02-07
  * Added support for Timer entity, such as Remaining time. Attribute to shown via dropdown if entity = timer.
  * Added new Dot Matrix symbols: House, lightniing, lightbulb, battery
@@ -77,7 +89,7 @@
 
 (() => {
   
-  const CARD_VERSION = "2.0.6";
+  const CARD_VERSION = "2.0.7";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -108,8 +120,15 @@ console.info(
     size_px: 0,              // 0 = auto
     italic: false,           // segment/plain only (disabled for matrix)
     center_text: false,      // center the display (otherwise right align like v1)
+    fixed_segments_animations: true,  // DEFAULT: fixed-grid animations (no translate/transform). Set false to use legacy transforms.
+
 
     show_title: true,
+
+    // Title placement
+    title_inline: false,        // show Title+Icon inline with value
+    title_reserve_px: 0,        // reserved width (px) for title area when inline (0 = auto)
+
 
     background_color: "#0B0F0C",
     text_color: "#00FF66",
@@ -128,6 +147,9 @@ console.info(
 
     // sizing (auto aspect ratio uses this unless /* auto_max_chars removed in v2.0.83 */ = true)
     max_chars: 10,
+
+    // Spacing between characters (applies to both 7-seg and dot-matrix)
+    char_gap_px: 6,
     // Color intervals (optional)
     color_intervals: [], // { from:number, to:number, color:"#RRGGBB" }
 
@@ -308,8 +330,47 @@ const MATRIX_ICON_TOKENS = Object.freeze({
   lightning: "",
   house: "",
   battery: "",
-  lightbulb: ""
+  lightbulb: "",
+plug: "\uE020",
+fan: "\uE021",
+fire: "\uE022",
+water: "\uE023",
+thermometer: "\uE024",
+arrow_up: "\uE025",
+arrow_down: "\uE026",
+check: "\uE027",
+cross: "\uE028",
+lock: "\uE029",
+unlock: "\uE02A",
+house_v2: "",
+tree: "",
+bolt_v2: "",
+warning: "",
+heart: "",
+battery_v2: "",
+arrows_lr: "",
+arrows_ud: "",
+arrows_ud_v2: "",
+happy: "",
+sad: "",
+skull: "",
+dollar: "",
+pound: "",
+euro: "",
+amp: "",
+at: "",
+question: ""
 });
+
+// Precompiled regex for <token> replacements (dot-matrix symbols).
+// Built from MATRIX_ICON_TOKENS keys so new symbols automatically work everywhere (title/value/templates).
+const MATRIX_TOKEN_RE = (() => {
+  const keys = Object.keys(MATRIX_ICON_TOKENS || {});
+  keys.sort((a, b) => b.length - a.length);
+  // Keys are simple (a-z, 0-9, underscore) so no escaping needed.
+  return new RegExp(`<(${keys.join("|")})>`, "g");
+})();
+
 
 // Minimal 5x7 glyphs for the tokens above.
 // NOTE: these are intentionally simple and readable at small sizes.
@@ -345,6 +406,36 @@ Object.assign(FONT_5X7, {
   [MATRIX_ICON_TOKENS.message]: [0b11111,0b10001,0b10101,0b10001,0b11111,0,0],
   [MATRIX_ICON_TOKENS.reminder]: [0b01110,0b10001,0b11111,0b10001,0b01110,0,0],
   [MATRIX_ICON_TOKENS.wifi]: [0b00001,0b00110,0b01000,0b00110,0b00001,0,0],
+
+  [MATRIX_ICON_TOKENS.plug]: [0b00100,0b00100,0b11111,0b10101,0b11111,0b00100,0b00100],
+  [MATRIX_ICON_TOKENS.fan]: [0b00100,0b01110,0b10101,0b01110,0b10101,0b01110,0b00100],
+  [MATRIX_ICON_TOKENS.fire]: [0b00100,0b01100,0b10110,0b11111,0b01110,0b00100,0],
+  [MATRIX_ICON_TOKENS.water]: [0b00100,0b01010,0b10001,0b10001,0b01010,0b00100,0],
+  [MATRIX_ICON_TOKENS.thermometer]: [0b00100,0b00100,0b00100,0b00100,0b01110,0b01110,0b00100],
+  [MATRIX_ICON_TOKENS.arrow_up]: [0b00100,0b01110,0b10101,0b00100,0b00100,0b00100,0],
+  [MATRIX_ICON_TOKENS.arrow_down]: [0b00100,0b00100,0b00100,0b00100,0b10101,0b01110,0b00100],
+  [MATRIX_ICON_TOKENS.check]: [0b00001,0b00010,0b00100,0b10100,0b01000,0,0],
+  [MATRIX_ICON_TOKENS.cross]: [0b10001,0b01010,0b00100,0b01010,0b10001,0,0],
+  [MATRIX_ICON_TOKENS.lock]: [0b01110,0b10001,0b10001,0b11111,0b10101,0b11111,0],
+  [MATRIX_ICON_TOKENS.unlock]: [0b01110,0b10000,0b10001,0b11111,0b10101,0b11111,0],
+[MATRIX_ICON_TOKENS.house_v2]: [0b00100,0b01110,0b11111,0b10101,0b11111,0b10001,0b10001],
+[MATRIX_ICON_TOKENS.tree]: [0b00100,0b01110,0b11111,0b00100,0b00100,0b01110,0b00100],
+[MATRIX_ICON_TOKENS.bolt_v2]: [0b00100,0b01100,0b11110,0b00110,0b01111,0b00110,0b00100],
+[MATRIX_ICON_TOKENS.warning]: [0b00100,0b00100,0b00100,0b00100,0b00100,0b00000,0b00100],
+[MATRIX_ICON_TOKENS.heart]: [0b01010,0b11111,0b11111,0b11111,0b01110,0b00100,0b00000],
+[MATRIX_ICON_TOKENS.battery_v2]: [0b01110,0b10001,0b11111,0b11111,0b11111,0b10001,0b01110],
+[MATRIX_ICON_TOKENS.arrows_lr]: [0b00100,0b01010,0b10001,0b11111,0b10001,0b01010,0b00100],
+[MATRIX_ICON_TOKENS.arrows_ud]: [0b00100,0b01110,0b10101,0b00100,0b10101,0b01110,0b00100],
+[MATRIX_ICON_TOKENS.arrows_ud_v2]: [0b00100,0b01110,0b11111,0b00100,0b11111,0b01110,0b00100],
+[MATRIX_ICON_TOKENS.happy]: [0b00000,0b01010,0b00000,0b00000,0b10001,0b01110,0b00000],
+[MATRIX_ICON_TOKENS.sad]: [0b00000,0b01010,0b00000,0b00000,0b01110,0b10001,0b00000],
+[MATRIX_ICON_TOKENS.skull]: [0b01110,0b10101,0b11111,0b11111,0b01110,0b01010,0b00000],
+[MATRIX_ICON_TOKENS.dollar]: [0b00100,0b01111,0b10100,0b01110,0b00101,0b11110,0b00100],
+[MATRIX_ICON_TOKENS.pound]: [0b00110,0b01001,0b11100,0b01000,0b11110,0b01000,0b11111],
+[MATRIX_ICON_TOKENS.euro]: [0b00110,0b01001,0b11110,0b01000,0b11110,0b01001,0b00110],
+[MATRIX_ICON_TOKENS.amp]: [0b01100,0b10010,0b10100,0b01000,0b10101,0b10010,0b01101],
+[MATRIX_ICON_TOKENS.at]: [0b01110,0b10001,0b10111,0b10101,0b10111,0b10000,0b01110],
+[MATRIX_ICON_TOKENS.question]: [0b01110,0b10001,0b00001,0b00110,0b00100,0b00000,0b00100],
 });
 function clampInt(n, min, max) {
   const x = Number.isFinite(n) ? n : min;
@@ -414,7 +505,7 @@ function applyTemplate(tpl, vars) {
     const key = String(k || "").trim();
     const v = vars?.attr?.[key];
     return (v === undefined || v === null) ? "" : String(v);
-  }).replace(/<(degree|x|stop|rain|rain_huge|ip|full|calendar|windows|clouds|cloud|door|female|snowflake|key|male|alarm|clock|garbage|info|moon|message|reminder|wifi|thunderstorm|sun|fog|cloud_moon|sun_cloud|lightning|house|battery|lightbulb)>/g, (_, n) => {
+  }).replace(MATRIX_TOKEN_RE, (_, n) => {
     return MATRIX_ICON_TOKENS?.[String(n)] ?? "";
   }).replaceAll("<value>", String(vars.value ?? ""))
     .replaceAll("<state>", String(vars.state ?? ""))
@@ -632,15 +723,38 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
 
 
   // -------------------- Color interval helper --------------------
-  function pickIntervalColor(intervals, n) {
+  function pickIntervalColor(intervals, n, stateStr) {
     if (!Array.isArray(intervals) || intervals.length === 0) return null;
+
+    const st = String(stateStr ?? "").trim().toLowerCase();
+
+    // 1) Match-value rules (string state, e.g. on/off/open/closed)
+    if (st) {
+      for (const it of intervals) {
+        const match = String(it?.match ?? "").trim();
+        if (!match) continue;
+        const parts = match.split(/[|,]/).map(p => p.trim().toLowerCase()).filter(Boolean);
+        if (parts.length && parts.includes(st)) {
+          const c = String(it?.color || "").trim();
+          if (/^#([0-9a-fA-F]{3}){1,2}$/.test(c)) return c.toUpperCase();
+        }
+      }
+    }
+
+    // 2) Numeric range rules (from/to)
+    const nn = Number(n);
+    if (!Number.isFinite(nn)) return null;
+
     for (const it of intervals) {
+      // If match is set, treat it as a match-rule (skip numeric)
+      if (String(it?.match ?? "").trim()) continue;
+
       const f = Number(it?.from);
-      const t = Number(it?.to);
-      if (!Number.isFinite(f) || !Number.isFinite(t)) continue;
-      const lo = Math.min(f, t);
-      const hi = Math.max(f, t);
-      if (n >= lo && n <= hi) {
+      const tt = Number(it?.to);
+      if (!Number.isFinite(f) || !Number.isFinite(tt)) continue;
+      const lo = Math.min(f, tt);
+      const hi = Math.max(f, tt);
+      if (nn >= lo && nn <= hi) {
         const c = String(it?.color || "").trim();
         if (/^#([0-9a-fA-F]{3}){1,2}$/.test(c)) return c.toUpperCase();
       }
@@ -701,6 +815,14 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
     // v2.1+ (rows) migration / normalization
     if (Array.isArray(cfg.rows) && cfg.rows.length) {
       const global = { ...DEFAULTS_GLOBAL, ...(cfg.global || cfg) };
+      // Sanitize a few common fields (HA editor components sometimes emit "" or strings)
+      if (typeof global.show_title !== "boolean") global.show_title = (DEFAULTS_GLOBAL.show_title !== false);
+      if (typeof global.show_unused !== "boolean") global.show_unused = (DEFAULTS_GLOBAL.show_unused !== false);
+      if (typeof global.title_inline !== "boolean") global.title_inline = !!DEFAULTS_GLOBAL.title_inline;
+      if (typeof global.fixed_segments_animations !== "boolean") global.fixed_segments_animations = (DEFAULTS_GLOBAL.fixed_segments_animations !== false);
+      if (typeof global.fixed_segments_animations !== "boolean") global.fixed_segments_animations = (DEFAULTS_GLOBAL.fixed_segments_animations !== false);
+      global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
+      global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
       const rows = cfg.rows.map((r) => {
         const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE }];
@@ -713,6 +835,13 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
     // If already v2-like (slides only)
     if (Array.isArray(cfg.slides)) {
       const global = { ...DEFAULTS_GLOBAL, ...(cfg.global || cfg) };
+      if (typeof global.show_title !== "boolean") global.show_title = (DEFAULTS_GLOBAL.show_title !== false);
+      if (typeof global.show_unused !== "boolean") global.show_unused = (DEFAULTS_GLOBAL.show_unused !== false);
+      if (typeof global.title_inline !== "boolean") global.title_inline = !!DEFAULTS_GLOBAL.title_inline;
+      if (typeof global.fixed_segments_animations !== "boolean") global.fixed_segments_animations = (DEFAULTS_GLOBAL.fixed_segments_animations !== false);
+      if (typeof global.fixed_segments_animations !== "boolean") global.fixed_segments_animations = (DEFAULTS_GLOBAL.fixed_segments_animations !== false);
+      global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
+      global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
       const slides = cfg.slides.length > 0 ? cfg.slides : [{ ...DEFAULT_SLIDE }];
       const normSlides = slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
@@ -726,6 +855,14 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
     for (const k of Object.keys(DEFAULTS_GLOBAL)) {
       if (typeof cfg[k] !== "undefined") global[k] = cfg[k];
     }
+
+    if (typeof global.show_title !== "boolean") global.show_title = (DEFAULTS_GLOBAL.show_title !== false);
+    if (typeof global.show_unused !== "boolean") global.show_unused = (DEFAULTS_GLOBAL.show_unused !== false);
+    if (typeof global.title_inline !== "boolean") global.title_inline = !!DEFAULTS_GLOBAL.title_inline;
+      if (typeof global.fixed_segments_animations !== "boolean") global.fixed_segments_animations = (DEFAULTS_GLOBAL.fixed_segments_animations !== false);
+      if (typeof global.fixed_segments_animations !== "boolean") global.fixed_segments_animations = (DEFAULTS_GLOBAL.fixed_segments_animations !== false);
+    global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
+    global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
 
     // Build first slide from old single-entity config
     const slide = { ...DEFAULT_SLIDE };
@@ -792,12 +929,37 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
     }
 
     _scheduleRender() {
+
       if (this._raf) cancelAnimationFrame(this._raf);
       this._raf = requestAnimationFrame(() => {
         this._raf = 0;
         this._render();
       });
     }
+
+
+    _fastUpdateRowDisplay(rowIndex, displayStr) {
+      const cfg = this._config || {};
+      const els = this._rowEls?.[rowIndex];
+      if (!els?.display) return;
+
+      const style = (cfg.render_style || "segment");
+      const s = String(displayStr ?? "");
+
+      // Only update innerHTML for the animated row; do NOT recompute hass/state/vars here (performance).
+      if (style === "plain") {
+        const italicAllowed = (style !== "matrix") && !!cfg.italic;
+        els.display.innerHTML = `<div class="plainText ${italicAllowed ? "asdc-italic" : ""}">${s}</div>`;
+      } else {
+        const html = s.split("").map((ch) => {
+          if (style === "segment") return svgForSegmentChar(ch, cfg);
+          return svgForMatrixChar(ch, cfg);
+        }).join("");
+        els.display.innerHTML = html;
+      }
+      els.display.setAttribute("aria-label", `value ${s}`);
+    }
+
 
     _getRows() {
       const cfg = this._config || {};
@@ -823,6 +985,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           liveFinishesAt: 0,
           liveRemainingBase: 0,
           liveStartMs: 0,
+          _lastAnimText: null,
         });
       }
       if (this._rowStates.length > count) {
@@ -943,6 +1106,159 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       }
     }
 
+
+    _fixedAnimEnabledForStyle(style) {
+      const cfg = this._config || {};
+      return !!cfg.fixed_segments_animations && (style === "segment" || style === "matrix");
+    }
+
+    _computeFixedShiftText(text, width, shift, dir) {
+      const w = Math.max(1, Number(width) || 1);
+      const s = Math.max(0, Math.min(w, Number(shift) || 0));
+      let base = String(text ?? "");
+      if (base.length > w) base = base.slice(base.length - w);
+      base = base.padStart(w, " ");
+      const spaces = " ".repeat(s);
+      if (dir === "left") {
+        return base.slice(s) + spaces;
+      }
+      return spaces + base.slice(0, w - s);
+    }
+
+
+    _computeFixedAnimText(st, finalText, width) {
+  const anim = st?.anim;
+  if (!anim || !anim.active) return null;
+
+  const now = performance.now();
+  const dur = Math.max(1, anim.durMs || 1);
+  const p = Math.max(0, Math.min(1, (now - anim.startMs) / dur));
+  const w = Math.max(1, Number(width) || 1);
+
+  if (anim.mode === "marquee") {
+    const total = Math.max(0, Number(anim.totalSteps) || 0);
+    const stepMs = Math.max(10, Number(anim.stepMs) || (dur / Math.max(1, total || 1)));
+    const stepRaw = Math.floor((now - anim.startMs) / stepMs);
+    const step = Math.max(0, Math.min(total, stepRaw));
+    anim._step = step;
+    const pad = String(anim.textPad ?? "");
+    if (!pad) return "";
+    if ((anim.dir || "left") === "right") {
+      const start = Math.max(0, Math.min(total - step, pad.length - w));
+      return pad.slice(start, start + w);
+    }
+    const start = Math.max(0, Math.min(step, pad.length - w));
+    return pad.slice(start, start + w);
+  }
+
+  if (anim.mode === "shift") {
+    const dir = anim.dir || "left";
+    const baseText = (anim.phase === "out") ? anim.baseText : (anim.targetText ?? finalText);
+    const stepMs = Math.max(10, Number(anim.stepMs) || (dur / Math.max(1, w)));
+    const step = Math.max(0, Math.min(w, Math.floor((now - anim.startMs) / stepMs)));
+    const shift = (anim.phase === "out") ? step : Math.max(0, w - step);
+    anim._shift = shift;
+    return this._computeFixedShiftText(baseText, w, shift, dir);
+  }
+
+  if (anim.mode === "fade") {
+    anim.opacity = (anim.phase === "out") ? (1 - p) : p;
+    return (anim.phase === "out") ? (anim.baseText ?? finalText) : (anim.targetText ?? finalText);
+  }
+
+  return null;
+}
+
+    _runFixedAnimRow(rowIndex, phase, styleName, seconds, baseText, targetText, width) {
+  const st = this._rowStates[rowIndex];
+  if (!st) return Promise.resolve();
+  const durMs = Math.max(0, Number(seconds) || 0) * 1000;
+  if (durMs <= 0) return Promise.resolve();
+
+  const style = String(styleName || "").toLowerCase();
+  const isLeft = style.includes("left");
+  const isRight = style.includes("right");
+  const isRun = style === "running";
+
+  // Running should enter from LEFT and travel to RIGHT (fixed grid)
+  const dir = isRun ? "right" : (isRight ? "right" : "left");
+
+  // Supported styles -> marquee/shift; others -> fade-only (no transforms)
+  const mode = isRun ? "marquee" : ((isLeft || isRight) ? "shift" : "fade");
+
+  const w = Math.max(1, Number(width) || 1);
+  const base = String(baseText ?? st.lastText ?? "");
+  const target = String(targetText ?? "");
+
+  st.anim = {
+    active: true,
+    mode,
+    phase,
+    dir,
+    startMs: performance.now(),
+    durMs,
+    baseText: base,
+    targetText: targetText ?? null,
+    opacity: null,
+    width: w,
+    // marquee fields
+    textPad: null,
+    totalSteps: 0,
+    stepMs: 0,
+    // per-frame helpers
+    _step: 0,
+    _shift: 0,
+  };
+
+  if (mode === "shift") {
+    st.anim.stepMs = durMs / Math.max(1, w);
+  }
+
+  if (mode === "marquee") {
+    const msg = (targetText != null) ? target : base;
+    const pad = " ".repeat(w) + msg + " ".repeat(w);
+    st.anim.textPad = pad;
+    st.anim.totalSteps = Math.max(0, pad.length - w);
+    st.anim.stepMs = st.anim.totalSteps > 0 ? (durMs / st.anim.totalSteps) : durMs;
+  }
+
+  return new Promise((resolve) => {
+    const tick = () => {
+      const a = st.anim;
+      if (!a || !a.active) return resolve();
+
+      const now = performance.now();
+      if ((now - a.startMs) >= a.durMs) {
+        // finalize
+        a.active = false;
+        st.anim = null;
+        st._lastAnimText = null;
+
+        const els = this._rowEls[rowIndex];
+        if (els?.display) els.display.style.opacity = "";
+        this._scheduleRender();
+        return resolve();
+      }
+
+      // Only re-render when the visible frame actually changes (reduces load / stutter)
+      const finalTxt = String(st.lastText ?? "");
+      const frameTxt = this._computeFixedAnimText(st, finalTxt, a.width);
+      if (frameTxt !== st._lastAnimText) {
+        st._lastAnimText = frameTxt;
+        this._fastUpdateRowDisplay(rowIndex, frameTxt);
+      }
+
+      // Adaptive tick: check often enough to catch the next step, but avoid hammering HA
+      const baseDelay = (document.hidden ? 250 : 33);
+      const stepMs = Number(a.stepMs) || 0;
+      const want = stepMs > 0 ? Math.max(16, Math.min(80, Math.floor(stepMs / 2))) : baseDelay;
+      setTimeout(tick, Math.max(baseDelay, want));
+    };
+
+    tick();
+  });
+}
+
     async _nextSlideRow(rowIndex) {
       const cfg = this._config;
       const rows = this._getRows();
@@ -981,11 +1297,16 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
 
       const els = this._rowEls[rowIndex];
       const displayEl = els?.display || this._els?.display;
+      const style = (cfg.render_style || "segment");
       if (displayEl && runOut) {
         const outStyle = isRunning ? "running" : current.hide_style;
-        applyAnim(displayEl, outStyle, "out", outS, !!current.fade);
-        await new Promise((res) => setTimeout(res, outS * 1000));
-        clearAnim(displayEl);
+        if (this._fixedAnimEnabledForStyle(style)) {
+          await this._runFixedAnimRow(rowIndex, "out", outStyle, outS, st.lastText, null, this._effectiveMaxChars(""));
+        } else {
+          applyAnim(displayEl, outStyle, "out", outS, !!current.fade);
+          await new Promise((res) => setTimeout(res, outS * 1000));
+          clearAnim(displayEl);
+        }
       } else if (displayEl) {
         clearAnim(displayEl);
       }
@@ -995,9 +1316,14 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       this._render();
 
       if (displayEl && inS > 0) {
-        applyAnim(displayEl, next.show_style, "in", inS, !!next.fade);
-        await new Promise((res) => setTimeout(res, inS * 1000));
-        clearAnim(displayEl);
+        if (this._fixedAnimEnabledForStyle(style)) {
+          // After render, st.lastText holds the final (target) text
+          await this._runFixedAnimRow(rowIndex, "in", next.show_style, inS, null, st.lastText, this._effectiveMaxChars(""));
+        } else {
+          applyAnim(displayEl, next.show_style, "in", inS, !!next.fade);
+          await new Promise((res) => setTimeout(res, inS * 1000));
+          clearAnim(displayEl);
+        }
       }
 
       st.isSwitching = false;
@@ -1030,7 +1356,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         }
       }
       const intervals = (slide && Array.isArray(slide.color_intervals) && slide.color_intervals.length) ? slide.color_intervals : cfg.color_intervals;
-      const intervalColor = (n === null) ? null : pickIntervalColor(intervals, n);
+      const intervalColor = pickIntervalColor(intervals, n, stateObj?.state);
       return (intervalColor || cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
     }
 
@@ -1087,6 +1413,8 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
                 justify-content: flex-end;
                 gap: 6px;
                 width: 100%;
+                min-width: 0;
+                overflow: hidden;
                 transform-origin: center;
               }
               #${this._uid} .char { height: 100%; width: auto; flex: 0 0 auto; }
@@ -1304,21 +1632,49 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         if (displayStr.length > effMax) displayStr = displayStr.slice(displayStr.length - effMax);
 
         // Dot-matrix: pad with spaces up to max chars so unused dot boxes remain visible
-        if ((cfg.render_style || "segment") === "matrix" && effMax > 0 && displayStr.length < effMax) {
-          const pad = effMax - displayStr.length;
-          if (cfg.center_text) {
-            const left = Math.floor(pad / 2);
-            const right = pad - left;
-            displayStr = " ".repeat(left) + displayStr + " ".repeat(right);
-          } else {
-            displayStr = " ".repeat(pad) + displayStr;
-          }
-        }
+if ((cfg.render_style || "segment") === "matrix" && effMax > 0 && displayStr.length < effMax) {
+  const pad = effMax - displayStr.length;
+  if (cfg.center_text) {
+    const left = Math.floor(pad / 2);
+    const right = pad - left;
+    displayStr = " ".repeat(left) + displayStr + " ".repeat(right);
+  } else {
+    displayStr = " ".repeat(pad) + displayStr;
+  }
+}
 
-        // Alignment + italic
+// 7-segment: pad with spaces up to max chars so unused 7-seg digits remain visible
+if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.length < effMax) {
+  const pad = effMax - displayStr.length;
+  if (cfg.center_text) {
+    const left = Math.floor(pad / 2);
+    const right = pad - left;
+    displayStr = " ".repeat(left) + displayStr + " ".repeat(right);
+  } else {
+    // right-aligned display: pad on the left
+    displayStr = " ".repeat(pad) + displayStr;
+  }
+}
+
+// Alignment + italic
+
         els.display.style.justifyContent = cfg.center_text ? "center" : "flex-end";
         const italicAllowed = (style !== "matrix") && !!cfg.italic;
         els.display.classList.toggle("asdc-italic", italicAllowed);
+
+        // Fixed-segment animation (opt-in): override text per frame without moving the grid
+        if (st?.anim?.active && this._fixedAnimEnabledForStyle(style)) {
+          const w = this._effectiveMaxChars("");
+          const ov = this._computeFixedAnimText(st, displayStr, w);
+          if (typeof ov === "string") displayStr = ov;
+          if (st.anim && typeof st.anim.opacity === "number") {
+            els.display.style.opacity = String(st.anim.opacity);
+          } else {
+            els.display.style.opacity = "";
+          }
+        } else {
+          els.display.style.opacity = "";
+        }
 
         // Update per-row sizing
         const maxChars = this._effectiveMaxChars(displayStr);
@@ -1346,6 +1702,41 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           els.title.style.display = "none";
         }
 
+        // Title inline (same row as value) + reserved width
+        const inlineTitle = (cfg.title_inline === true);
+        els.row.classList.toggle("asdc-inline-title", inlineTitle);
+        if (inlineTitle) {
+          els.row.style.display = "flex";
+          els.row.style.alignItems = "center";
+          els.row.style.gap = "10px";
+          els.title.style.padding = "0";
+          els.title.style.margin = "0";
+          const reserve = clampInt(Number(cfg.title_reserve_px ?? 0), 0, 1000);
+          if (reserve > 0) {
+            els.title.style.flex = `0 0 ${reserve}px`;
+            els.title.style.minWidth = `${reserve}px`;
+          } else {
+            els.title.style.flex = "0 0 auto";
+            els.title.style.minWidth = "";
+          }
+          els.display.style.flex = "1 1 auto";
+          els.display.style.minWidth = "0";
+          els.display.style.overflow = "hidden";
+        } else {
+          els.row.style.display = "";
+          els.row.style.alignItems = "";
+          els.row.style.gap = "";
+          els.title.style.flex = "";
+          els.title.style.minWidth = "";
+          els.display.style.flex = "";
+          els.display.style.minWidth = "";
+          els.display.style.overflow = "";
+        }
+
+        // Character gap (between digits/characters)
+        const charGap = clampInt(Number(cfg.char_gap_px ?? 6), 0, 40);
+        els.display.style.gap = `${charGap}px`;
+
         // Colors (per row, interval aware)
         const activeTextColor = this._computeActiveTextColor(stateObj, slide);
 
@@ -1360,7 +1751,8 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         els.row.style.setProperty("--asdc-dot-on", dotOn);
         els.row.style.setProperty("--asdc-dot-off", (cfg.matrix_dot_off_color || DEFAULTS_GLOBAL.matrix_dot_off_color).toUpperCase());
 
-        const showUnused = !!cfg.show_unused;
+        // 7-segment LCD style: always show unused segments (faint) so the display looks like a real LCD.
+        const showUnused = (style === "segment") ? true : !!cfg.show_unused;
         els.row.style.setProperty("--asdc-unused-fill", showUnused ? (cfg.unused_color || DEFAULTS_GLOBAL.unused_color).toUpperCase() : "transparent");
 
         // Render content only if changed
@@ -1674,8 +2066,32 @@ row._tf = tf;
        const cardTitle = document.createElement("div");
        cardTitle.className = "section-title badgesHeader";
        cardTitle.innerText = CARD_TAGLINE;
-       root.appendChild(cardTitle);
+       root.appendChild(cardTitle);       
+       
+             // ---------- Support (TOP) ----------
+      // Only the support block should be at the top. Variables + Symbols remain at the bottom.
+      //const secSupportTop = mkSection("Support the project");
+      const supportTop = document.createElement("div");
+      supportTop.className = "badgeVarsHelp";
+      supportTop.innerHTML = `
+        <div class="badgeSupport">
+          <div class="badgeSupportTitle">☕ Support the project</div>
+          <div class="badgeSupportText">
+            I’m a Home Automation enthusiast who spends late nights building custom cards and tools for Home Assistant.
+            If you enjoy my work or use any of my cards, your support helps me keep improving and maintaining everything.
+          </div>
+          <div class="badgeSupportActions">
+            <a class="badgeSupportImgLink" href="https://www.buymeacoffee.com/AndyBonde" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee">
+              <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" width="140" alt="Buy me a coffee">
+            </a>
+          </div>
+        </div>
+      `;
+      //secSupportTop.appendChild(supportTop);
+      root.appendChild(supportTop);
+
       
+
       // ---------- Global ----------
       const secGlobal = mkSection("Global settings");
 
@@ -1700,6 +2116,16 @@ row._tf = tf;
       const { wrap: stWrap, sw: stSw } = mkSwitch("Show title", "show_title");
       this._elShowTitle = stSw;
       secGlobal.appendChild(stWrap);
+
+      const { wrap: inlWrap, sw: inlSw } = mkSwitch("Title + icon inline (same row)", "title_inline");
+      this._elTitleInline = inlSw;
+      secGlobal.appendChild(inlWrap);
+
+      this._elTitleReserve = mkText("Reserved title width (px)", "title_reserve_px", "number", "0 = auto");
+      secGlobal.appendChild(this._elTitleReserve);
+
+      this._elCharGap = mkText("Character gap (px)", "char_gap_px", "number", "6");
+      secGlobal.appendChild(this._elCharGap);
 
       this._rowText = mkColor("Text color", "text_color");
       secGlobal.appendChild(this._rowText);
@@ -1877,6 +2303,36 @@ row._tf = tf;
         ["house", "house"],
         ["battery", "battery"],
         ["lightbulb", "lightbulb"],
+        ["plug", "plug"],
+        ["fan", "fan"],
+        ["fire", "fire"],
+        ["water", "water"],
+        ["thermometer", "thermometer"],
+        ["arrow_up", "arrow up"],
+        ["arrow_down", "arrow down"],
+        ["check", "check"],
+        ["cross", "cross"],
+        ["lock", "lock"],
+        ["unlock", "unlock"],
+
+["house_v2", "House v2"],
+["tree", "Tree"],
+["bolt_v2", "Bolt v2"],
+["warning", "warning"],
+["heart", "heart"],
+["battery_v2", "Battery v2"],
+["arrows_lr", "Left/right arrows"],
+["arrows_ud", "Up/down arrows"],
+["arrows_ud_v2", "Up/down arrows v2"],
+["happy", "happy"],
+["sad", "sad"],
+["skull", "skull"],
+["dollar", "$"],
+["pound", "£"],
+["euro", "€"],
+["amp", "&"],
+["at", "@"],
+["question", "?"],
       ];
 
       const symCfg = {
@@ -1912,19 +2368,7 @@ row._tf = tf;
           <div class="badgeSymGrid">${symbolRows}</div>
         </div>
 
-        <div class="badgeSupport">
-          <div class="badgeSupportTitle">☕ Support the project</div>
-          <div class="badgeSupportText">
-            I’m a Home Automation enthusiast who spends late nights building custom cards and tools for Home Assistant.
-            If you enjoy my work or use any of my cards, your support helps me keep improving and maintaining everything.
-          </div>
-
-          <div class="badgeSupportActions">
-            <a class="badgeSupportImgLink" href="https://www.buymeacoffee.com/AndyBonde" target="_blank" rel="noopener noreferrer" aria-label="Buy me a coffee">
-              <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" width="140" alt="Buy me a coffee">
-            </a>
-          </div>
-        </div>
+        
       `;
 
       secSupport.appendChild(varsHead);
@@ -2170,7 +2614,7 @@ row._tf = tf;
         }
         .intervalRow{
           display:grid;
-          grid-template-columns: 1fr 1fr 1.2fr auto;
+          grid-template-columns: 1fr 1fr 1.2fr 1.2fr auto;
           gap:10px;
           align-items:end;
         }
@@ -2284,18 +2728,8 @@ row._tf = tf;
         margin-bottom: 10px;
         line-height: 1.35;
       }
-      .badgeSymGrid{
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 6px;
-      }
-      .badgeSymRow{
-        display: grid;
-        grid-template-columns: 140px 1fr 60px;
-        gap: 10px;
-        align-items: center;
-        padding: 6px 8px;
-        border-radius: 10px;
+      .badgeSymGrid{ display:grid; grid-template-columns: 1fr; gap: 2px; }
+      .badgeSymRow{ display:grid; grid-template-columns: 140px 1fr 60px; gap: 10px; align-items:center; padding: 3px 8px; border-radius:10px;
         background: rgba(0,0,0,0.04);
       }
       .badgeSymKey code{
@@ -2395,6 +2829,11 @@ row._tf = tf;
       this._elCenter.checked = !!this._config.center_text;
 
       this._elShowTitle.checked = (this._config.show_title !== false);
+
+      // Title inline + reserved width + char gap
+      this._elTitleInline.checked = !!this._config.title_inline;
+      if (this._elTitleReserve) this._elTitleReserve.value = String(this._config.title_reserve_px ?? 0);
+      if (this._elCharGap) this._elCharGap.value = String(this._config.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px);
 
       const isMatrix = (this._config.render_style === "matrix");
       this._elItalic.disabled = isMatrix;
@@ -2655,6 +3094,15 @@ row._tf = tf;
         to.addEventListener("change", (e) => this._onSlideIntervalChange(e));
         to.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
 
+        const match = document.createElement("ha-textfield");
+        match.label = "Match value";
+        match.placeholder = "e.g. on, off, open, closed";
+        match.value = (typeof it.match === "string") ? it.match : "";
+        match.dataset.intervalIndex = String(idx);
+        match.dataset.intervalKey = "match";
+        match.addEventListener("change", (e) => this._onSlideIntervalChange(e));
+        match.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
         const colorRow = document.createElement("div");
         colorRow.className = "colorRow";
         const tf = document.createElement("ha-textfield");
@@ -2705,6 +3153,7 @@ row._tf = tf;
 
         row.appendChild(from);
         row.appendChild(to);
+        row.appendChild(match);
         row.appendChild(colorRow);
         row.appendChild(del);
         list.appendChild(row);
@@ -2737,7 +3186,19 @@ row._tf = tf;
       const s = { ...slides[si] };
       const intervals = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
       const it = { ...(intervals[idx] || {}) };
-      it[key] = value;
+
+      if (key === "from" || key === "to") {
+        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
+        it[key] = Number.isFinite(num) ? num : 0;
+      } else if (key === "match") {
+        it.match = String(value || "").trim();
+      } else if (key === "color") {
+        const s2 = String(value || "").trim();
+        if (/^#([0-9a-fA-F]{3}){1,2}$/.test(s2)) it.color = s2.toUpperCase();
+        else it.color = s2;
+      } else {
+        it[key] = value;
+      }
       intervals[idx] = it;
       s.color_intervals = intervals;
       slides[si] = s;
@@ -2771,6 +3232,15 @@ row._tf = tf;
         to.dataset.intervalKey = "to";
         to.addEventListener("change", (e) => this._onIntervalChange(e));
         to.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+
+        const match = document.createElement("ha-textfield");
+        match.label = "Match value";
+        match.placeholder = "e.g. on, off, open, closed";
+        match.value = (typeof it.match === "string") ? it.match : "";
+        match.dataset.intervalIndex = String(idx);
+        match.dataset.intervalKey = "match";
+        match.addEventListener("change", (e) => this._onIntervalChange(e));
+        match.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
         const colorRow = document.createElement("div");
         colorRow.className = "colorRow";
@@ -2813,6 +3283,7 @@ row._tf = tf;
 
         row.appendChild(from);
         row.appendChild(to);
+        row.appendChild(match);
         row.appendChild(colorRow);
         row.appendChild(del);
 
@@ -2991,14 +3462,14 @@ row._tf = tf;
       }
 
       if (typeof target.checked !== "undefined") {
-        if (key === "italic" || key === "center_text" || key === "show_unused" || key === "show_title") {
+        if (key === "italic" || key === "center_text" || key === "show_unused" || key === "show_title" || key === "title_inline") {
           return this._commit(key, !!target.checked);
         }
       }
 
       let value = this._eventValue(ev, target);
 
-      if (key === "size_px" || key === "max_chars") {
+      if (key === "size_px" || key === "max_chars" || key === "title_reserve_px" || key === "char_gap_px") {
         value = value === "" ? 0 : Number(value);
         if (!Number.isFinite(value)) value = 0;
         return this._commit(key, value);
@@ -3222,6 +3693,8 @@ row._tf = tf;
       if (key === "from" || key === "to") {
         const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
         it[key] = Number.isFinite(num) ? num : 0;
+      } else if (key === "match") {
+        it.match = String(value || "").trim();
       } else if (key === "color") {
         const s = String(value || "").trim();
         if (/^#([0-9a-fA-F]{3}){1,2}$/.test(s)) it.color = s.toUpperCase();
