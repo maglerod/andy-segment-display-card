@@ -1,4 +1,4 @@
-# Andy Segment Display Card V2.0.5
+# Andy Segment Display Card V2.0.7
 
 ### 7-segment mode (numeric) Dot-matrix mode (text) & Plain text
 ![Preview of display](Images/segment-display-card.png)
@@ -36,7 +36,7 @@ Features:
 - Safe multi-card usage:
 - Instance-scoped CSS prevents multiple cards from affecting each other
 
-## v2.0.5
+## v2.0.7
 - Added Title + Icon inline (same row) as value / progressbar
 - Added reserve title + icon space if Inline
 - Added segment GAP setting
@@ -45,6 +45,18 @@ Features:
 - Showing unused segments in both 7-segment and Dot Matrix mode
 - Added "fixed" segments in animation, smoother animation
 - Optimisation of animation loops
+
+
+## v2.0.6
+- Added support for Timer entity, such as Remaining time. Attribute to shown via dropdown if entity = timer.
+- Added new Dot Matrix symbols: House, lightniing, lightbulb, battery
+- Added support for showing % and # in dot matrix
+
+
+## v2.0.5
+- Added support for GAP between title and Icon
+- Added Color picker for Title aand Icon
+- Added interval color selection on progressbar (show all or active interval)
 
 
 ## v2.0.4
