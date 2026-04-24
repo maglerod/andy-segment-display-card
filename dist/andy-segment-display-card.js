@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.7
+ * v2.0.9
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,18 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ *
+
+ * 2.0.9 - 2026-04-24
+ * UI: Better mobile-friendly numeric editor input for negative/decimal interval ranges
+ * NEW: Auto-entities row shorthand support (row objects can be treated as single-slide rows)
+ * PERF: Reduce per-render row normalization/allocation pressure for smoother mobile dashboards
+
+ * 2.0.8 - 2026-02-14
+ * PERF: Fix fixed-segment animation timer cleanup + reduce will-change GPU pressure
+ * NEW: Interval NewValue (with variables + matrix tokens) + Interval Effect (Neon)
+ * NEW: Animation style 'fade' (simple fade in/out)
+ * UI: Progressbar preset button in editor
  *
  * 2.0.7 - 2025-02-211
  * Added Title + Icon inline (same row) as value / progressbar
@@ -89,7 +101,7 @@
 
 (() => {
   
-  const CARD_VERSION = "2.0.7";
+  const CARD_VERSION = "2.0.9";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -122,6 +134,10 @@ console.info(
     center_text: false,      // center the display (otherwise right align like v1)
     fixed_segments_animations: true,  // DEFAULT: fixed-grid animations (no translate/transform). Set false to use legacy transforms.
 
+    // Interactions (Home Assistant standard)
+    tap_action: { action: "more-info" },
+    hold_action: { action: "none" },
+    double_tap_action: { action: "toggle-mode" },
 
     show_title: true,
 
@@ -151,7 +167,14 @@ console.info(
     // Spacing between characters (applies to both 7-seg and dot-matrix)
     char_gap_px: 6,
     // Color intervals (optional)
-    color_intervals: [], // { from:number, to:number, color:"#RRGGBB" }
+    // { from:number, to:number, color:"#RRGGBB", match?:string, new_value?:string, effect?:"none"|"neon" }
+    color_intervals: [],
+
+    // Optional global effect when no interval overrides it
+    text_effect: "none", // none | neon
+
+    // Neon effect strength (0..100). Interval can override via neon_strength.
+    neon_strength: 0,
 
     // Dot-matrix geometry (kept for compatibility; not exposed in v2 editor)
     matrix_cols: 5,
@@ -177,7 +200,8 @@ console.info(
     show_unit: false,
 
     // Color intervals (slide override, optional)
-    color_intervals: [], // { from:number, to:number, color:"#RRGGBB" }
+    // { from:number, to:number, color:"#RRGGBB", match?:string, new_value?:string, effect?:"none"|"neon" }
+    color_intervals: [],
 
     // Text template (matrix/plain only): use "<value>" placeholder
     value_template: "<value>",
@@ -622,17 +646,17 @@ function svgForSegmentChar(ch, cfg) {
   // Punctuation / indicator chars for 7-segment
   if (ch === ".") {
     return `
-      <svg class="char dot" viewBox="0 0 60 120" aria-hidden="true">
-        <circle class="seg on" cx="45" cy="105" r="8"></circle>
+      <svg class="char dot" viewBox="0 0 26 120" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+        <circle class="seg on" cx="18" cy="105" r="8"></circle>
       </svg>
     `;
   }
 
   if (ch === ",") {
     return `
-      <svg class="char dot" viewBox="0 0 60 120" aria-hidden="true">
-        <circle class="seg on" cx="45" cy="105" r="8"></circle>
-        <rect class="seg on" x="41" y="110" width="8" height="10" rx="3"></rect>
+      <svg class="char dot" viewBox="0 0 26 120" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+        <circle class="seg on" cx="18" cy="105" r="8"></circle>
+        <rect class="seg on" x="15" y="110" width="6" height="10" rx="3"></rect>
       </svg>
     `;
   }
@@ -693,7 +717,8 @@ function svgForMatrixChar(ch, cfg) {
   const w = cols * cell + (cols - 1) * gap;
   const h = rows * cell + (rows - 1) * gap;
 
-  let dots = "";
+  let onDots = "";
+  let offDots = "";
   for (let r = 0; r < rows; r++) {
     const rowBits = pattern[r] ?? 0;
     for (let c = 0; c < cols; c++) {
@@ -701,13 +726,15 @@ function svgForMatrixChar(ch, cfg) {
       const on = ((rowBits >> bitIndex) & 1) === 1;
       const x = c * (cell + gap);
       const y = r * (cell + gap);
-      dots += `<rect class="dot ${on ? "on" : "off"}" x="${x}" y="${y}" width="${cell}" height="${cell}" rx="2" ry="2"></rect>`;
+      const el = `<rect class="dot ${on ? "on" : "off"}" x="${x}" y="${y}" width="${cell}" height="${cell}" rx="2" ry="2"></rect>`;
+      if (on) onDots += el; else offDots += el;
     }
   }
 
   return `
     <svg class="char matrix" viewBox="0 0 ${w} ${h}" aria-hidden="true">
-      ${dots}
+      <g class="offLayer">${offDots}</g>
+      <g class="onLayer">${onDots}</g>
     </svg>
   `;
 }
@@ -722,8 +749,81 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
 }
 
 
+// -------------------- Gradient helpers (Segment + Matrix) --------------------
+// Gradient is enabled when interval provides color_to (hex). Applies ONLY to 7-segment + dot-matrix.
+// We inject <defs> into each SVG so url(#...) resolves inside the SVG fragment (safe, no global id collisions).
+function _asdcGradientDefs(colorA, colorB, style) {
+  const a = String(colorA || "").trim();
+  const b = String(colorB || "").trim();
+  const mode = String(style || "linear").toLowerCase();
+  const id = "asdc-grad";
+  if (!a || !b) return "";
+  if (mode === "inside-out" || mode === "inside_out" || mode === "insideout") {
+    return `<defs>
+      <radialGradient id="${id}" cx="50%" cy="50%" r="65%">
+        <stop offset="0%" stop-color="${a}"></stop>
+        <stop offset="100%" stop-color="${b}"></stop>
+      </radialGradient>
+    </defs>`;
+  }
+  if (mode === "outside-in" || mode === "outside_in" || mode === "outsidein") {
+    return `<defs>
+      <radialGradient id="${id}" cx="50%" cy="50%" r="65%">
+        <stop offset="0%" stop-color="${b}"></stop>
+        <stop offset="100%" stop-color="${a}"></stop>
+      </radialGradient>
+    </defs>`;
+  }
+  if (mode === "two-tone" || mode === "two_tone" || mode === "twotone") {
+    return `<defs>
+      <linearGradient id="${id}" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="${a}"></stop>
+        <stop offset="50%" stop-color="${a}"></stop>
+        <stop offset="50%" stop-color="${b}"></stop>
+        <stop offset="100%" stop-color="${b}"></stop>
+      </linearGradient>
+    </defs>`;
+  }
+  // default: linear top->bottom
+  return `<defs>
+    <linearGradient id="${id}" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="${a}"></stop>
+      <stop offset="100%" stop-color="${b}"></stop>
+    </linearGradient>
+  </defs>`;
+}
+
+function _asdcInjectPaintIntoSvg(svg, paint) {
+  if (!paint || !paint.gradient_on) return svg;
+  const defs = _asdcGradientDefs(paint.color, paint.color_to, paint.gradient_style);
+  if (!defs) return svg;
+  const fillRef = "url(#asdc-grad)";
+  // Put custom property on <svg ...> so inner elements can resolve it.
+  // Also inject defs just after opening <svg ...>.
+  return svg
+    .replace(/<svg\s+([^>]*?)>/, (m0, attrs) => {
+      const hasStyle = /\sstyle=/.test(attrs);
+      const styleAdd = `--asdc-on-fill:${fillRef};`;
+      const attrs2 = hasStyle
+        ? attrs.replace(/style="([^"]*)"/, (m1, s1) => `style="${s1};${styleAdd}"`)
+        : `${attrs} style="${styleAdd}"`;
+      return `<svg ${attrs2}>${defs}`;
+    });
+}
+
+function svgForSegmentCharPainted(ch, cfg, paint) {
+  const svg = svgForSegmentChar(ch, cfg);
+  return _asdcInjectPaintIntoSvg(svg, paint);
+}
+
+function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
+  // Start from the colored variant so we keep --asdc-dot-on fix inside SVG (browser/webview quirks).
+  let svg = svgForMatrixCharColored(ch, cfg, dotOnOverride);
+  return _asdcInjectPaintIntoSvg(svg, paint);
+}
+
   // -------------------- Color interval helper --------------------
-  function pickIntervalColor(intervals, n, stateStr) {
+  function pickIntervalRule(intervals, n, stateStr) {
     if (!Array.isArray(intervals) || intervals.length === 0) return null;
 
     const st = String(stateStr ?? "").trim().toLowerCase();
@@ -734,10 +834,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         const match = String(it?.match ?? "").trim();
         if (!match) continue;
         const parts = match.split(/[|,]/).map(p => p.trim().toLowerCase()).filter(Boolean);
-        if (parts.length && parts.includes(st)) {
-          const c = String(it?.color || "").trim();
-          if (/^#([0-9a-fA-F]{3}){1,2}$/.test(c)) return c.toUpperCase();
-        }
+        if (parts.length && parts.includes(st)) return it || null;
       }
     }
 
@@ -754,14 +851,18 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       if (!Number.isFinite(f) || !Number.isFinite(tt)) continue;
       const lo = Math.min(f, tt);
       const hi = Math.max(f, tt);
-      if (nn >= lo && nn <= hi) {
-        const c = String(it?.color || "").trim();
-        if (/^#([0-9a-fA-F]{3}){1,2}$/.test(c)) return c.toUpperCase();
-      }
+      if (nn >= lo && nn <= hi) return it || null;
     }
     return null;
   }
 
+  function pickIntervalColor(intervals, n, stateStr) {
+    const it = pickIntervalRule(intervals, n, stateStr);
+    if (!it) return null;
+    const c = String(it?.color || "").trim();
+    if (/^#([0-9a-fA-F]{3}){1,2}$/.test(c)) return c.toUpperCase();
+    return null;
+  }
   function toNumberOrNull(stateObj) {
     if (!stateObj) return null;
     const raw = stateObj.state;
@@ -778,10 +879,11 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       case "running":   return phase === "in" ? "asdc-in-run-left"  : "asdc-out-run-right";
       case "run_left":  return phase === "in" ? "asdc-in-run-left"  : "asdc-out-run-left";
       case "run_right": return phase === "in" ? "asdc-in-run-right" : "asdc-out-run-right";
-      case "run_top":   return phase === "in" ? "asdc-in-run-top"   : "asdc-out-run-top";
-      case "run_bottom":return phase === "in" ? "asdc-in-run-bottom": "asdc-out-run-bottom";
+      case "run_top":   return phase === "in" ? "asdc-in-top"   : "asdc-out-top";
+      case "run_bottom":return phase === "in" ? "asdc-in-bottom": "asdc-out-bottom";
       case "billboard": return phase === "in" ? "asdc-in-billboard" : "asdc-out-billboard";
       case "matrix":    return phase === "in" ? "asdc-in-matrix"    : "asdc-out-matrix";
+      case "fade":      return phase === "in" ? "asdc-in-fade"     : "asdc-out-fade";
       default:          return phase === "in" ? "asdc-in-run-left"  : "asdc-out-run-right";
     }
   }
@@ -807,6 +909,70 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
     el.classList.remove("asdc-anim");
   }
 
+  function parseEditorNumber(raw) {
+    if (raw === "" || raw === null || typeof raw === "undefined") return null;
+    if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+
+    const s = String(raw).trim().replace(/\s+/g, "").replace(",", ".");
+    if (!s || s === "-" || s === "+" || s === "." || s === "," || s === "-." || s === "+.") return null;
+
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function tuneNumericTextfield(tf, { allowNegative = false, allowDecimal = true } = {}) {
+    if (!tf) return tf;
+
+    const pattern = allowDecimal
+      ? (allowNegative ? "[-0-9.,]*" : "[0-9.,]*")
+      : (allowNegative ? "[-0-9]*" : "[0-9]*");
+
+    tf.type = "text";
+    tf.inputMode = allowDecimal ? "decimal" : "numeric";
+    tf.autocomplete = "off";
+    tf.spellcheck = false;
+    tf.setAttribute("type", "text");
+    tf.setAttribute("inputmode", allowDecimal ? "decimal" : "numeric");
+    tf.setAttribute("autocomplete", "off");
+    tf.setAttribute("spellcheck", "false");
+    tf.setAttribute("pattern", pattern);
+    return tf;
+  }
+
+  function normalizeSlideConfig(slide) {
+    return { ...DEFAULT_SLIDE, ...(slide || {}) };
+  }
+
+  function normalizeSlidesConfig(slides) {
+    if (Array.isArray(slides) && slides.length) {
+      return slides.map((s) => normalizeSlideConfig(s));
+    }
+    return [{ ...DEFAULT_SLIDE }];
+  }
+
+  function normalizeRowConfig(row) {
+    const base = { ...(row || {}) };
+
+    if (Array.isArray(base.slides) && base.slides.length) {
+      return { ...base, slides: normalizeSlidesConfig(base.slides) };
+    }
+
+    // Auto-entities and similar generators often provide row items directly as slide-like objects.
+    // Treat that shorthand as a single-slide row while preserving row flags like is_default.
+    const slideSource = { ...base };
+    delete slideSource.slides;
+    delete slideSource.is_default;
+
+    return { ...base, slides: normalizeSlidesConfig([slideSource]) };
+  }
+
+  function normalizeRowsConfig(rows, fallbackSlides) {
+    if (Array.isArray(rows) && rows.length) {
+      return rows.map((r) => normalizeRowConfig(r));
+    }
+    return [{ ...DEFAULT_ROW, is_default: true, slides: normalizeSlidesConfig(fallbackSlides) }];
+  }
+
   // -------------------- Config migration --------------------
   function migrateConfig(config) {
     const cfg = config || {};
@@ -824,10 +990,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
       global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
-      const rows = cfg.rows.map((r) => {
-        const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE }];
-        return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
-      });
+      const rows = normalizeRowsConfig(cfg.rows, cfg.slides);
       // keep backward-compatible top-level slides as row 0
       return { ...(_type ? { type: _type } : {}), ...global, rows, slides: rows[0].slides };
     }
@@ -843,8 +1006,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
       global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
-      const slides = cfg.slides.length > 0 ? cfg.slides : [{ ...DEFAULT_SLIDE }];
-      const normSlides = slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      const normSlides = normalizeSlidesConfig(cfg.slides);
       return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
     }
 
@@ -873,7 +1035,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
     slide.leading_zero = cfg.leading_zero !== false;
     slide.show_unit = !!cfg.show_unit;
 
-    const normSlides = [slide];
+    const normSlides = normalizeSlidesConfig([slide]);
     return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
   }
 
@@ -889,10 +1051,19 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       this._rowStates = [];
       this._rowEls = [];
 
+      // Render cache for fast slide transitions (reduces SVG/string churn)
+      this._renderCache = new Map();
+      this._renderCacheOrder = [];
+      this._renderCacheMax = 80;
+
       // Legacy mirrors (row 0)
       this._slideIndex = 0;
       this._timer = 0;
       this._isSwitching = false;
+
+      // Runtime-only style toggle (does not mutate YAML config)
+      this._runtimeStyle = null;
+      this._pendingRender = false;
 
     }
 
@@ -920,22 +1091,79 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       this._scheduleRender();
     }
 
+    connectedCallback() {
+      super.connectedCallback && super.connectedCallback();
+
+      // Visibility tracking to avoid animating cards that are off-screen (big CPU saver with many cards)
+      this._isVisible = true;
+      if (!this._io && "IntersectionObserver" in window) {
+        this._io = new IntersectionObserver((entries) => {
+          const e = entries && entries[0];
+          const vis = !!(e && e.isIntersecting);
+          this._isVisible = vis;
+          if (vis) this._scheduleRender(true);
+          else this._pendingRender = true;
+        }, { root: null, threshold: 0.01 });
+        try { this._io.observe(this); } catch (e) {}
+      }
+
+      if (!this._onVisChange) {
+        this._onVisChange = () => {
+          // When tab becomes visible again, repaint once so animations resume smoothly
+          if (!document.hidden) this._scheduleRender(true);
+        };
+        document.addEventListener("visibilitychange", this._onVisChange);
+      }
+
+      // Action handlers (tap/hold/double)
+      this._setupActions && this._setupActions();
+
+    }
+
     disconnectedCallback() {
       this._clearAllTimers();
+      if (this._raf) {
+        cancelAnimationFrame(this._raf);
+        this._raf = 0;
+      }
+
+      if (this._io) {
+        try { this._io.disconnect(); } catch (e) {}
+        this._io = null;
+      }
+      if (this._onVisChange) {
+        document.removeEventListener("visibilitychange", this._onVisChange);
+        this._onVisChange = null;
+      }
+      // Release references to help GC in long-running dashboards
+      this._rowEls = null;
+      this._rowStates = [];
+      this._slides = null;
+      this._config = null;
+      this._hass = null;
     }
 
     getCardSize() {
       return 2;
     }
 
-    _scheduleRender() {
 
-      if (this._raf) cancelAnimationFrame(this._raf);
-      this._raf = requestAnimationFrame(() => {
-        this._raf = 0;
-        this._render();
-      });
-    }
+_scheduleRender(force = false) {
+  // Big perf win: do not render while off-screen or when tab is hidden.
+  // We keep a pending flag and repaint once the card becomes visible again.
+  if (!force && (!this._isVisible || document.hidden)) {
+    this._pendingRender = true;
+    return;
+  }
+
+  if (this._raf) cancelAnimationFrame(this._raf);
+  this._raf = requestAnimationFrame(() => {
+    this._raf = 0;
+    this._pendingRender = false;
+    this._render();
+  });
+}
+
 
 
     _fastUpdateRowDisplay(rowIndex, displayStr) {
@@ -943,34 +1171,93 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       const els = this._rowEls?.[rowIndex];
       if (!els?.display) return;
 
-      const style = (cfg.render_style || "segment");
+      const style = this._effectiveStyle(cfg);
+      try { if (this._actionsInitDone && this._asdcAction && !this._asdcAction.bound) { const c = this.querySelector('ha-card.asdc-card') || this.querySelector('.asdc-card'); this._bindActionsToTarget(c || this); } } catch(e) {}
       const s = String(displayStr ?? "");
 
       // Only update innerHTML for the animated row; do NOT recompute hass/state/vars here (performance).
-      if (style === "plain") {
-        const italicAllowed = (style !== "matrix") && !!cfg.italic;
-        els.display.innerHTML = `<div class="plainText ${italicAllowed ? "asdc-italic" : ""}">${s}</div>`;
-      } else {
-        const html = s.split("").map((ch) => {
-          if (style === "segment") return svgForSegmentChar(ch, cfg);
-          return svgForMatrixChar(ch, cfg);
-        }).join("");
-        els.display.innerHTML = html;
-      }
+      // Only update innerHTML for the animated row; do NOT recompute hass/state/vars here (performance).
+      const paint = this._rowStates?.[rowIndex]?._activePaint || null;
+      const html = this._getCachedDisplayHtml(style, s, cfg, paint);
+      els.display.innerHTML = html;
+
       els.display.setAttribute("aria-label", `value ${s}`);
     }
 
 
+
+    _cfgCacheSig(cfg) {
+      if (!cfg) return "";
+      if (cfg.__asdc_cache_sig) return cfg.__asdc_cache_sig;
+      // Include only render-affecting settings (keep short to avoid perf overhead)
+      const sigObj = {
+        render_style: cfg.render_style,
+        // Segment
+        segment_style: cfg.segment_style,
+        segment_variant: cfg.segment_variant,
+        segment_round: cfg.segment_round,
+        segment_skew: cfg.segment_skew,
+        show_unused: cfg.show_unused,
+        unused_color: cfg.unused_color,
+        // Matrix
+        matrix_dot_style: cfg.matrix_dot_style,
+        matrix_dot_size: cfg.matrix_dot_size,
+        matrix_gap_px: cfg.matrix_gap_px,
+        matrix_dot_off_color: cfg.matrix_dot_off_color,
+        // General
+        italic: cfg.italic,
+      };
+      const s = JSON.stringify(sigObj);
+      cfg.__asdc_cache_sig = String(s);
+      return cfg.__asdc_cache_sig;
+    }
+
+    _paintCacheKey(paint) {
+      if (!paint) return "";
+      return [
+        paint.color || "",
+        paint.color_to || "",
+        paint.gradient_style || "",
+        paint.gradient_on ? "1" : "0"
+      ].join("|");
+    }
+
+    _getCachedDisplayHtml(style, text, cfg, paint) {
+      const s = String(text ?? "");
+      const key = `${style}::${this._cfgCacheSig(cfg)}::${this._paintCacheKey(paint)}::${s}`;
+      const cache = this._renderCache;
+      if (cache && cache.has(key)) return cache.get(key);
+
+      let html = "";
+      if (style === "plain") {
+        html = `<div class="plainText ${(style !== "matrix") && !!cfg.italic ? "asdc-italic" : ""}">${s}</div>`;
+      } else {
+        const chars = s.split("");
+        const dotOn = (paint?.color || (cfg.text_color || "#00FF66"));
+        for (let i = 0; i < chars.length; i++) {
+          const ch = chars[i];
+          if (style === "segment") html += svgForSegmentCharPainted(ch, cfg, paint);
+          else html += svgForMatrixCharPainted(ch, cfg, paint, dotOn);
+        }
+      }
+
+      if (cache) {
+        cache.set(key, html);
+        this._renderCacheOrder.push(key);
+        if (this._renderCacheOrder.length > (this._renderCacheMax || 80)) {
+          const old = this._renderCacheOrder.shift();
+          if (old) cache.delete(old);
+        }
+      }
+      return html;
+    }
+
     _getRows() {
       const cfg = this._config || {};
       if (Array.isArray(cfg.rows) && cfg.rows.length) {
-        return cfg.rows.map(r => ({
-          ...(r || {}),
-          slides: Array.isArray(r?.slides) && r.slides.length ? r.slides : [{ ...DEFAULT_SLIDE }],
-        }));
+        return cfg.rows;
       }
-      const slides = Array.isArray(cfg.slides) && cfg.slides.length ? cfg.slides : [{ ...DEFAULT_SLIDE }];
-      return [{ ...DEFAULT_ROW, slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      return normalizeRowsConfig(null, cfg.slides);
     }
 
     _ensureRowState(count) {
@@ -980,6 +1267,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           timer: 0,
           isSwitching: false,
           lastText: null,
+          _lastStyle: null,
           liveTimer: 0,
           liveMode: null,
           liveFinishesAt: 0,
@@ -993,7 +1281,8 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         for (let i = count; i < this._rowStates.length; i++) {
           const st = this._rowStates[i];
           if (st?.timer) clearTimeout(st.timer);
-        if (st?.liveTimer) clearInterval(st.liveTimer);
+          if (st?.liveTimer) clearInterval(st.liveTimer);
+          if (st?.animTimer) clearTimeout(st.animTimer);
         }
         this._rowStates.length = count;
       }
@@ -1003,9 +1292,14 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       (this._rowStates || []).forEach(st => {
         if (st?.timer) clearTimeout(st.timer);
         if (st?.liveTimer) clearInterval(st.liveTimer);
+        if (st?.animTimer) clearTimeout(st.animTimer);
         if (st) {
           st.timer = 0;
+          st.liveTimer = 0;
+          st.animTimer = 0;
           st.isSwitching = false;
+          if (st.anim) { st.anim.active = false; st.anim = null; }
+          st._lastAnimText = null;
         }
       });
     }
@@ -1015,6 +1309,10 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       if (st?.timer) {
         clearTimeout(st.timer);
         st.timer = 0;
+      }
+      if (st?.animTimer) {
+        clearTimeout(st.animTimer);
+        st.animTimer = 0;
       }
       if (st) st.isSwitching = false;
     }
@@ -1225,7 +1523,14 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
   return new Promise((resolve) => {
     const tick = () => {
       const a = st.anim;
-      if (!a || !a.active) return resolve();
+      if (!a || !a.active) { if (st.animTimer) { clearTimeout(st.animTimer); st.animTimer = 0; } return resolve(); }
+
+      // Pause heavy animation work when tab is hidden or card is off-screen
+      if (document.hidden || this._isVisible === false) {
+        if (st.animTimer) clearTimeout(st.animTimer);
+        st.animTimer = setTimeout(tick, 250);
+        return;
+      }
 
       const now = performance.now();
       if ((now - a.startMs) >= a.durMs) {
@@ -1233,6 +1538,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         a.active = false;
         st.anim = null;
         st._lastAnimText = null;
+        if (st.animTimer) { clearTimeout(st.animTimer); st.animTimer = 0; }
 
         const els = this._rowEls[rowIndex];
         if (els?.display) els.display.style.opacity = "";
@@ -1243,16 +1549,22 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       // Only re-render when the visible frame actually changes (reduces load / stutter)
       const finalTxt = String(st.lastText ?? "");
       const frameTxt = this._computeFixedAnimText(st, finalTxt, a.width);
+      // Fade uses opacity updates even when text frame doesn't change
+      if (st.anim && typeof st.anim.opacity === "number") {
+        const els2 = this._rowEls[rowIndex];
+        if (els2?.display) els2.display.style.opacity = String(st.anim.opacity);
+      }
       if (frameTxt !== st._lastAnimText) {
         st._lastAnimText = frameTxt;
         this._fastUpdateRowDisplay(rowIndex, frameTxt);
       }
 
       // Adaptive tick: check often enough to catch the next step, but avoid hammering HA
-      const baseDelay = (document.hidden ? 250 : 33);
+      const baseDelay = ((document.hidden || this._isVisible === false) ? 250 : 33);
       const stepMs = Number(a.stepMs) || 0;
       const want = stepMs > 0 ? Math.max(16, Math.min(80, Math.floor(stepMs / 2))) : baseDelay;
-      setTimeout(tick, Math.max(baseDelay, want));
+      if (st.animTimer) clearTimeout(st.animTimer);
+      st.animTimer = setTimeout(tick, Math.max(baseDelay, want));
     };
 
     tick();
@@ -1297,7 +1609,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
 
       const els = this._rowEls[rowIndex];
       const displayEl = els?.display || this._els?.display;
-      const style = (cfg.render_style || "segment");
+      const style = this._effectiveStyle(cfg);
       if (displayEl && runOut) {
         const outStyle = isRunning ? "running" : current.hide_style;
         if (this._fixedAnimEnabledForStyle(style)) {
@@ -1340,7 +1652,8 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
       return clampInt(cfg.max_chars ?? DEFAULTS_GLOBAL.max_chars, 1, 40);
     }
 
-    _computeActiveTextColor(stateObj, slide) {
+    
+    _computeActivePaint(stateObj, slide) {
       const cfg = this._config;
       let n = toNumberOrNull(stateObj);
       const domain = (slide?.entity || "").split(".")[0] || "";
@@ -1355,9 +1668,29 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           n = (durS === null) ? null : durS;
         }
       }
+
       const intervals = (slide && Array.isArray(slide.color_intervals) && slide.color_intervals.length) ? slide.color_intervals : cfg.color_intervals;
-      const intervalColor = pickIntervalColor(intervals, n, stateObj?.state);
-      return (intervalColor || cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
+      const rule = pickIntervalRule(intervals, n, stateObj?.state);
+
+      const color = (rule && /^#([0-9a-fA-F]{3}){1,2}$/.test(String(rule.color || "").trim()))
+        ? String(rule.color).trim().toUpperCase()
+        : (cfg.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
+
+      const colorTo = (rule && /^#([0-9a-fA-F]{3}){1,2}$/.test(String(rule.color_to || "").trim()))
+        ? String(rule.color_to).trim().toUpperCase()
+        : "";
+
+      const rs = this._effectiveStyle(cfg);
+      const gradientOn = !!colorTo && (rs === "segment" || rs === "matrix");
+
+      const gStyle = String(rule?.gradient_style || "linear").trim().toLowerCase() || "linear";
+
+      return {
+        color,
+        color_to: colorTo,
+        gradient_style: gStyle,
+        gradient_on: gradientOn,
+      };
     }
 
     _render() {
@@ -1370,7 +1703,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
 
       const sizePx = Number(cfg.size_px ?? 0);
       const isAuto = !Number.isFinite(sizePx) || sizePx <= 0;
-      const style = cfg.render_style || "segment"; // segment|matrix|plain
+      const style = (this._runtimeStyle || cfg.render_style || "segment"); // segment|matrix|plain
 
       if (!this._built) {
         this._built = true;
@@ -1418,18 +1751,21 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
                 transform-origin: center;
               }
               #${this._uid} .char { height: 100%; width: auto; flex: 0 0 auto; }
+              #${this._uid} .wrap.segment .display { align-items: flex-end; }
+              #${this._uid} .wrap.segment .char { display: block; }
+
               #${this._uid} .wrap.segment .char.dot { width: 26px; }
 
               /* Segment mode (kept from v1) */
               #${this._uid} .wrap.segment .seg.on {
-                fill: var(--asdc-text-color);
+                fill: var(--asdc-on-fill, var(--asdc-text-color));
                 filter: drop-shadow(0 0 6px rgba(0,0,0,0.35));
               }
               #${this._uid} .wrap.segment .seg.off { fill: var(--asdc-unused-fill); }
 
               /* Matrix mode (kept from v1) */
               #${this._uid} .wrap.matrix .dot.on {
-                fill: var(--asdc-dot-on);
+                fill: var(--asdc-on-fill, var(--asdc-dot-on));
                 filter: drop-shadow(0 0 6px rgba(0,0,0,0.25));
               }
               #${this._uid} .wrap.matrix .dot.off { fill: var(--asdc-dot-off); }
@@ -1454,7 +1790,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
               #${this._uid} .wrap.plain .plainText.asdc-italic { font-style: italic; transform: none; }
 
               /* Animation base */
-              #${this._uid} .display.asdc-anim { will-change: transform, opacity, filter; }
+              #${this._uid} .display.asdc-anim { will-change: transform, opacity; }
 
               /* Keyframes */
               @keyframes asdc-in-run-left { 0% { transform: translateX(-25%); opacity: calc(1 - var(--asdc-anim-fade)); } 100% { transform: translateX(0); opacity: 1; } }
@@ -1470,6 +1806,28 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
               @keyframes asdc-in-matrix { 0% { transform: translateY(-10%) skewX(-8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px);} 100% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0);} }
               @keyframes asdc-out-matrix { 0% { transform: translateY(0) skewX(0); opacity: 1; filter: blur(0);} 100% { transform: translateY(10%) skewX(8deg); opacity: calc(1 - var(--asdc-anim-fade)); filter: blur(1px);} }
               @keyframes asdc-in-running { 0% { transform: translateX(-100%); } 100% { transform: translateX(0); } }
+              @keyframes asdc-in-fade { 0% { opacity: 0; } 100% { opacity: 1; } }
+              @keyframes asdc-out-fade { 0% { opacity: 1; } 100% { opacity: 0; } }
+
+              /* Neon effect (only when enabled via interval/global)
+                 NOTE: Apply glow ONLY to active elements (onLayer / .on), never to off dots/segments. */
+              #${this._uid} .asdc-neon {
+                --asdc-neon1: 5px;
+                --asdc-neon2: 14px;
+              }
+              /* Neon on matrix/7-seg disabled (plain text only) */
+/* Plain text */
+              #${this._uid} .asdc-neon .plainText {
+                text-shadow: 0 0 var(--asdc-neon1) var(--asdc-text-color), 0 0 var(--asdc-neon2) var(--asdc-text-color);
+              }
+              /* If supported, add drop-shadow boost (auto mode) */
+              #${this._uid}.asdc-neon-filter .asdc-neon .plainText {
+                filter: drop-shadow(0 0 var(--asdc-neon1) var(--asdc-text-color)) drop-shadow(0 0 var(--asdc-neon2) var(--asdc-text-color));
+              }
+              /* Allow glow to extend beyond clipping on some WebViews */
+              #${this._uid} .asdc-neon .display { overflow: visible; }
+
+
               @keyframes asdc-out-running { 0% { transform: translateX(0); } 100% { transform: translateX(100%); } }
             </style>
           </div>
@@ -1482,6 +1840,21 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           wrap: root.querySelector(".wrap"),
           rows: root.querySelector(".rows"),
         };
+
+        // Bind actions to the actual ha-card element for reliable tap/hold/double.
+        this._bindActionsToTarget(this._els.card || this);
+
+        // Feature detect drop-shadow support (some kiosk/WebView devices are limited)
+        if (this._supportsDropShadow == null) {
+          try {
+            this._supportsDropShadow = !!(window.CSS && CSS.supports && CSS.supports("filter", "drop-shadow(0 0 2px #000)"));
+          } catch (e) {
+            this._supportsDropShadow = false;
+          }
+        }
+        // Mark root so CSS can add a filter-based boost where supported (text-shadow remains the fallback)
+        this._els.root.classList.toggle("asdc-neon-filter", !!this._supportsDropShadow);
+
       }
 
       // Global wrap class controls the SVG styling for all rows
@@ -1591,6 +1964,70 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         };
 
         let displayStr = valueStr;
+
+        // Interval rule (for NewValue / Effect) – matches same logic as interval colors
+        const intervalsForRule = (Array.isArray(slide.color_intervals) && slide.color_intervals.length) ? slide.color_intervals : (cfg.color_intervals || []);
+        let intervalN = toNumberOrNull(stateObj);
+        // Timer entities: allow interval matching on remaining seconds if a timer_mode is active
+        if (stateObj && String(slide.timer_mode || "").trim() && String(slide.entity || "").startsWith("timer.")) {
+          const mode = String(slide.timer_mode || "").trim();
+          const durS = parseHmsToSeconds(stateObj.attributes?.duration);
+          const remAttrS = parseHmsToSeconds(stateObj.attributes?.remaining);
+          const finMs = stateObj.attributes?.finishes_at ? new Date(stateObj.attributes.finishes_at).getTime() : 0;
+
+          let remS = remAttrS;
+          if (finMs && Number.isFinite(finMs)) {
+            remS = Math.max(0, Math.round((finMs - Date.now()) / 1000));
+          } else if (remAttrS !== null) {
+            const stLive = this._rowStates[rowIndex];
+            if (stLive && stLive.liveStartMs) {
+              const elapsed = Math.round((Date.now() - stLive.liveStartMs) / 1000);
+              remS = Math.max(0, (stLive.liveRemainingBase || remAttrS || 0) - elapsed);
+            }
+          }
+          if ((mode === "finishes_in" || mode === "remaining") && remS !== null) intervalN = remS;
+          else if (mode === "duration" && durS !== null) intervalN = durS;
+        }
+
+        const intervalRule = pickIntervalRule(intervalsForRule, intervalN, stateObj?.state);
+
+        // Neon effect (strength 0..100). Interval can override via neon_strength.
+        // Backward compat:
+        // - If interval.effect === "neon" and neon_strength is missing, use global cfg.neon_strength (or 60 fallback)
+        // - If cfg.text_effect === "neon", apply global cfg.neon_strength
+        const globalEff = String(cfg.text_effect || "none").toLowerCase();
+        const globalStrengthRaw = Number(cfg.neon_strength ?? 0);
+
+        let strengthRaw = 0;
+        if (intervalRule && intervalRule.neon_strength != null && intervalRule.neon_strength !== "") {
+          strengthRaw = Number(intervalRule.neon_strength);
+        } else if (intervalRule && String(intervalRule.effect || "").toLowerCase() === "neon") {
+          strengthRaw = Number.isFinite(globalStrengthRaw) && globalStrengthRaw > 0 ? globalStrengthRaw : 60;
+        } else if (globalEff === "neon") {
+          strengthRaw = globalStrengthRaw;
+        }
+
+        const strength = Number.isFinite(strengthRaw) ? Math.max(0, Math.min(100, strengthRaw)) : 0;
+
+// Neon is supported for plain text only (per request). 0 = off.
+const _rs = String(cfg.render_style || "segment").toLowerCase();
+const isPlain = (_rs === "plain");
+const neonOn = isPlain && strength > 0;
+
+els.row.classList.toggle("asdc-neon", neonOn);
+
+if (neonOn) {
+  // Convert 0..100 -> px blur radius (tuned for plain text)
+  const b1 = 1.2 + (strength / 100) * 5.0;
+  const b2 = 3.2 + (strength / 100) * 16.0;
+  els.row.style.setProperty("--asdc-neon1", `${b1.toFixed(2)}px`);
+  els.row.style.setProperty("--asdc-neon2", `${b2.toFixed(2)}px`);
+} else {
+  els.row.style.removeProperty("--asdc-neon1");
+  els.row.style.removeProperty("--asdc-neon2");
+}
+
+// Base value formatting (template) for non-segment renderers
         if ((cfg.render_style || "segment") !== "segment") {
           const tpl = String(slide.value_template || "<value>");
           if (tpl.includes("<")) {
@@ -1600,6 +2037,15 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
           }
 
           if ((cfg.render_style || "matrix") === "matrix") {
+            displayStr = normalizeForMatrix(displayStr);
+          }
+        }
+
+        // Optional interval NewValue (overrides template output)
+        if (intervalRule && typeof intervalRule.new_value === "string" && intervalRule.new_value.trim() !== "") {
+          const tplNv = String(intervalRule.new_value);
+          displayStr = tplNv.includes("<") ? applyTemplate(tplNv, vars) : tplNv;
+          if ((cfg.render_style || "segment") === "matrix") {
             displayStr = normalizeForMatrix(displayStr);
           }
         }
@@ -1622,7 +2068,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
 
         // If there's nothing to show (e.g. timer not started / unknown), keep the display width by rendering blanks
         // so "unused segments/dots" can still be visible (7-seg: faint segments, matrix: off dots).
-        if (((cfg.render_style || "matrix") === "segment" || (cfg.render_style || "matrix") === "matrix") &&
+        if (((style || "matrix") === "segment" || (style || "matrix") === "matrix") &&
             (!displayStr || String(displayStr).trim() === "")) {
           const __mc = clampInt(cfg.max_chars ?? DEFAULTS.max_chars, 1, 40);
           displayStr = " ".repeat(__mc);
@@ -1632,7 +2078,7 @@ function svgForMatrixCharColored(ch, cfg, dotOnOverride) {
         if (displayStr.length > effMax) displayStr = displayStr.slice(displayStr.length - effMax);
 
         // Dot-matrix: pad with spaces up to max chars so unused dot boxes remain visible
-if ((cfg.render_style || "segment") === "matrix" && effMax > 0 && displayStr.length < effMax) {
+if ((style || "segment") === "matrix" && effMax > 0 && displayStr.length < effMax) {
   const pad = effMax - displayStr.length;
   if (cfg.center_text) {
     const left = Math.floor(pad / 2);
@@ -1644,7 +2090,7 @@ if ((cfg.render_style || "segment") === "matrix" && effMax > 0 && displayStr.len
 }
 
 // 7-segment: pad with spaces up to max chars so unused 7-seg digits remain visible
-if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.length < effMax) {
+if ((style || "segment") === "segment" && effMax > 0 && displayStr.length < effMax) {
   const pad = effMax - displayStr.length;
   if (cfg.center_text) {
     const left = Math.floor(pad / 2);
@@ -1656,11 +2102,36 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
   }
 }
 
-// Alignment + italic
 
-        els.display.style.justifyContent = cfg.center_text ? "center" : "flex-end";
+// PERF: Build a lightweight signature for row layout + styling.
+// If nothing that affects DOM/styles changed, we can skip most assignments.
+        const __paintTmp = this._computeActivePaint(stateObj, slide);
+        const __rowSig = [
+          String(style),
+          String(displayStr),
+          String(cfg.center_text ? "C" : "R"),
+          String((style !== "matrix") && !!cfg.italic ? "I" : "N"),
+          String(isAuto ? "A" : "F"),
+          String(sizePx || 0),
+          String(cfg.max_chars || ""),
+          String(cfg.char_gap_px || ""),
+          String(cfg.title_inline === true ? "T" : "N"),
+          String(cfg.title_reserve_px || 0),
+          String(cfg.show_title !== false ? "ST" : "HT"),
+          String(__paintTmp.color || ""),
+          String(__paintTmp.color_to || ""),
+          String(__paintTmp.gradient_style || ""),
+          String(cfg.matrix_dot_off_color || ""),
+          String(cfg.unused_color || ""),
+          String(cfg.title_color || ""),
+        ].join("§");
+
+        // Store paint on state (used below). This avoids recomputing if we early exit.
+        st._activePaint = __paintTmp;
+
+        const __sigSame = (__rowSig === st._lastRowSig);
+
         const italicAllowed = (style !== "matrix") && !!cfg.italic;
-        els.display.classList.toggle("asdc-italic", italicAllowed);
 
         // Fixed-segment animation (opt-in): override text per frame without moving the grid
         if (st?.anim?.active && this._fixedAnimEnabledForStyle(style)) {
@@ -1675,6 +2146,13 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
         } else {
           els.display.style.opacity = "";
         }
+
+        const dotOn = st._activePaint?.color || cfg.text_color || DEFAULTS_GLOBAL.text_color;
+
+        // Alignment + italic + sizing + title + colors (skip when nothing changed)
+        if (!__sigSame) {
+          els.display.style.justifyContent = cfg.center_text ? "center" : "flex-end";
+          els.display.classList.toggle("asdc-italic", italicAllowed);
 
         // Update per-row sizing
         const maxChars = this._effectiveMaxChars(displayStr);
@@ -1691,14 +2169,27 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
           els.display.style.height = `${clampInt(sizePx, 18, 300)}px`;
         }
 
-        // Row title (per row)
+        // Row title (per row) - cached to avoid DOM churn on every hass update
         let titleText = (cfg.show_title !== false) ? (slide.title || "") : "";
-        if (titleText || (slide?.title_icon)) {
+        const titleIcon = (slide?.title_icon || "");
+        const titleAlign = (slide?.title_icon_align || "left");
+        const titleGap = (slide?.title_icon_gap ?? 6);
+        const titleTextColor = (slide?.title_text_color || "");
+        const titleIconColor = (slide?.title_icon_color || "");
+
+        if (titleText || titleIcon) {
           if (String(titleText).includes("<")) titleText = applyTemplate(titleText, vars);
-          setTitleWithIcon(els.title, titleText, (slide?.title_icon || ""), (slide?.title_icon_align || "left"), (slide?.title_icon_gap ?? 6), (slide?.title_text_color || ""), (slide?.title_icon_color || ""));
+          const tKey = [titleText, titleIcon, titleAlign, String(titleGap), titleTextColor, titleIconColor].join("|");
+          if (tKey !== st._lastTitleKey) {
+            st._lastTitleKey = tKey;
+            setTitleWithIcon(els.title, titleText, titleIcon, titleAlign, titleGap, titleTextColor, titleIconColor);
+          }
           els.title.style.display = "flex";
         } else {
-          els.title.textContent = "";
+          if (st._lastTitleKey) {
+            st._lastTitleKey = "";
+            els.title.textContent = "";
+          }
           els.title.style.display = "none";
         }
 
@@ -1738,10 +2229,10 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
         els.display.style.gap = `${charGap}px`;
 
         // Colors (per row, interval aware)
-        const activeTextColor = this._computeActiveTextColor(stateObj, slide);
+        const paint = st._activePaint;
+        const activeTextColor = paint.color;
 
         // Dot ON color: follow activeTextColor for all render styles
-        const dotOn = activeTextColor;
 
         const titleDefault = DEFAULT_TITLE_COLOR; // fixed default gray
         const tc = String(cfg.title_color || "").trim();
@@ -1755,8 +2246,13 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
         const showUnused = (style === "segment") ? true : !!cfg.show_unused;
         els.row.style.setProperty("--asdc-unused-fill", showUnused ? (cfg.unused_color || DEFAULTS_GLOBAL.unused_color).toUpperCase() : "transparent");
 
+        }
+
+        if (!__sigSame) st._lastRowSig = __rowSig;
+
         // Render content only if changed
-        if (displayStr !== st.lastText) {
+        if (displayStr !== st.lastText || style !== st._lastStyle) {
+          st._lastStyle = style;
           st.lastText = displayStr;
 
           if (style === "plain") {
@@ -1821,7 +2317,7 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
 
                 } else {
 
-                  out += svgForMatrixChar(" ", cfg);
+                  out += svgForMatrixCharPainted(" ", cfg, st._activePaint, dotOn);
 
                 }
 
@@ -1834,21 +2330,7 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
 
             if (html === null) {
 
-              const chars = displayStr
-
-                .split("")
-
-                .map((ch) => {
-
-                  if (style === "segment") return svgForSegmentChar(ch, cfg);
-
-                  return svgForMatrixChar(ch, cfg);
-
-                })
-
-                .join("");
-
-              html = chars;
+              html = this._getCachedDisplayHtml(style, displayStr, cfg, st._activePaint);
 
             }
 
@@ -1867,6 +2349,275 @@ if ((cfg.render_style || "segment") === "segment" && effMax > 0 && displayStr.le
       // Start/continue loops for each row
       rows.forEach((row, idx) => this._startLoopRow(idx, row));
     }
+    
+// -------------------- Actions (tap/hold/double tap) --------------------
+// HA is inconsistent across browsers/webviews with pointer/dblclick. We therefore use:
+// - click -> tap/double (time-based, reliable everywhere)
+// - contextmenu -> hold (long-press on touch, right-click on desktop)
+// plus pointer-based hold fallback for environments that don't emit contextmenu on long press.
+
+_setupActions() {
+  if (this._actionsInitDone) return;
+  this._actionsInitDone = true;
+
+  this._asdcAction = {
+    bound: false,
+    target: null,
+    tapTimer: 0,
+    lastClickTs: 0,
+    ignoreNextClick: false,
+    // pointer-hold fallback
+    holdTimer: 0,
+    downX: 0,
+    downY: 0,
+    moved: false,
+  };
+}
+
+_bindActionsToTarget(target) {
+  if (!target) return;
+  const st = this._asdcAction || (this._asdcAction = {});
+  if (st.bound && st.target === target) return;
+  if (st.bound) return; // bind once per instance
+
+  st.bound = true;
+  st.target = target;
+
+  const DOUBLE_MS = 280;
+  const HOLD_MS = 550;
+  const MOVE_TOL = 14;
+
+  const debug = (...args) => {
+    try {
+      if (this._config && this._config.debug_actions) console.debug("[ASDC actions]", ...args);
+    } catch (e) {}
+  };
+
+  const clearTimers = () => {
+    if (st.tapTimer) { clearTimeout(st.tapTimer); st.tapTimer = 0; }
+    if (st.holdTimer) { clearTimeout(st.holdTimer); st.holdTimer = 0; }
+  };
+
+  // ----- click -> tap/double -----
+  const onClick = (ev) => {
+    // If a hold just happened, ignore the click that follows.
+    if (st.ignoreNextClick) {
+      st.ignoreNextClick = false;
+      debug("click ignored after hold");
+      try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch (e) {}
+      return;
+    }
+
+    const now = Date.now();
+    const last = st.lastClickTs || 0;
+
+    // double
+    if (now - last <= DOUBLE_MS) {
+      st.lastClickTs = 0;
+      if (st.tapTimer) { clearTimeout(st.tapTimer); st.tapTimer = 0; }
+      debug("double");
+      this._doAction("double", ev);
+      try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch (e) {}
+      return;
+    }
+
+    // single (defer)
+    st.lastClickTs = now;
+    if (st.tapTimer) { clearTimeout(st.tapTimer); st.tapTimer = 0; }
+    st.tapTimer = setTimeout(() => {
+      st.tapTimer = 0;
+      st.lastClickTs = 0;
+      debug("tap");
+      this._doAction("tap", ev);
+    }, DOUBLE_MS);
+  };
+
+  // ----- contextmenu -> hold (best on touch + right click desktop) -----
+  const onContext = (ev) => {
+    debug("hold(contextmenu)");
+    // contextmenu should never show for cards
+    try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch (e) {}
+    // cancel pending tap/double
+    if (st.tapTimer) { clearTimeout(st.tapTimer); st.tapTimer = 0; }
+    st.lastClickTs = 0;
+    this._doAction("hold", ev);
+    // ignore the click that often follows long-press
+    st.ignoreNextClick = true;
+  };
+
+  // ----- pointer-hold fallback -----
+  const onDown = (ev) => {
+    // primary button only
+    if (ev && ev.button !== undefined && ev.button !== 0) return;
+
+    st.moved = false;
+    const p = ev?.touches?.[0] || ev;
+    st.downX = p?.clientX ?? 0;
+    st.downY = p?.clientY ?? 0;
+
+    if (st.holdTimer) { clearTimeout(st.holdTimer); st.holdTimer = 0; }
+    st.holdTimer = setTimeout(() => {
+      st.holdTimer = 0;
+      if (st.moved) return;
+      debug("hold(pointer)");
+      // cancel pending tap
+      if (st.tapTimer) { clearTimeout(st.tapTimer); st.tapTimer = 0; }
+      st.lastClickTs = 0;
+      this._doAction("hold", ev);
+      st.ignoreNextClick = true;
+      try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch (e) {}
+    }, HOLD_MS);
+  };
+
+  const onMove = (ev) => {
+    if (!st.holdTimer) return;
+    const p = ev?.touches?.[0] || ev;
+    const x = p?.clientX ?? 0;
+    const y = p?.clientY ?? 0;
+    const dx = Math.abs(x - st.downX);
+    const dy = Math.abs(y - st.downY);
+    if ((dx + dy) > MOVE_TOL) {
+      st.moved = true;
+      if (st.holdTimer) { clearTimeout(st.holdTimer); st.holdTimer = 0; }
+    }
+  };
+
+  const onUp = (ev) => {
+    if (st.holdTimer) { clearTimeout(st.holdTimer); st.holdTimer = 0; }
+  };
+
+  // Bind in capture so internal elements can't swallow events
+  target.addEventListener("click", onClick, true);
+  target.addEventListener("contextmenu", onContext, true);
+
+  target.addEventListener("pointerdown", onDown, true);
+  target.addEventListener("pointermove", onMove, true);
+  target.addEventListener("pointerup", onUp, true);
+  target.addEventListener("pointercancel", onUp, true);
+
+  target.addEventListener("touchstart", onDown, true);
+  target.addEventListener("touchmove", onMove, true);
+  target.addEventListener("touchend", onUp, true);
+  target.addEventListener("touchcancel", onUp, true);
+
+  target.addEventListener("mousedown", onDown, true);
+  target.addEventListener("mousemove", onMove, true);
+  target.addEventListener("mouseup", onUp, true);
+
+  debug("bound", target);
+}
+
+
+
+
+    _getActiveEntityId
+() {
+      // Prefer active slide entity if present, else card entity
+      try {
+        const row = (this._rows && this._rows[0]) ? this._rows[0] : null;
+        const slides = row && Array.isArray(row.slides) ? row.slides : (Array.isArray(this._config?.slides) ? this._config.slides : null);
+        const si = clampInt(this._slideIndex || 0, 0, slides ? (slides.length - 1) : 0);
+        const slide = slides ? slides[si] : null;
+        return (slide && slide.entity) ? slide.entity : (this._config && this._config.entity) ? this._config.entity : null;
+      } catch (e) {
+        return (this._config && this._config.entity) ? this._config.entity : null;
+      }
+    }
+
+    _getActionConfig(kind) {
+      // kind: tap|hold|double
+      const slideKey = kind === "double" ? "double_tap_action" : `${kind}_action`;
+      const globalKey = slideKey;
+
+      // slide override if present
+      try {
+        const row = (this._rows && this._rows[0]) ? this._rows[0] : null;
+        const slides = row && Array.isArray(row.slides) ? row.slides : (Array.isArray(this._config?.slides) ? this._config.slides : null);
+        const si = clampInt(this._slideIndex || 0, 0, slides ? (slides.length - 1) : 0);
+        const slide = slides ? slides[si] : null;
+        if (slide && slide[slideKey]) return slide[slideKey];
+      } catch (e) { /* ignore */ }
+
+      return this._config ? this._config[globalKey] : null;
+    }
+
+
+    _effectiveStyle(cfg) {
+      const c = cfg || this._config || {};
+      return String(this._runtimeStyle || c.render_style || "segment").toLowerCase();
+    }
+
+
+
+_toggleRenderMode() {
+  const order = ["segment", "matrix", "plain"];
+  const cfg = this._config || {};
+  const cur = String(this._runtimeStyle || cfg.render_style || "segment").toLowerCase();
+  const idx = Math.max(0, order.indexOf(cur));
+  const next = order[(idx + 1) % order.length];
+  this._runtimeStyle = next;
+  this._scheduleRender(true);
+}
+
+    _doAction(kind, ev) {
+      const hass = this._hass;
+      if (!hass) return;
+
+      const cfg = this._getActionConfig(kind);
+      if (!cfg || !cfg.action || cfg.action === "none") return;
+
+      const entityId = this._getActiveEntityId();
+      const action = String(cfg.action);
+
+      if (action === "toggle-mode") {
+        this._toggleRenderMode();
+        return;
+      }
+
+      if (action === "more-info") {
+        if (!entityId) return;
+        const e = new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true });
+        this.dispatchEvent(e);
+        return;
+      }
+
+      if (action === "toggle") {
+        if (!entityId) return;
+        hass.callService("homeassistant", "toggle", { entity_id: entityId });
+        return;
+      }
+
+      if (action === "navigate") {
+        const path = cfg.navigation_path;
+        if (!path) return;
+        history.pushState(null, "", path);
+        window.dispatchEvent(new Event("location-changed", { bubbles: true, composed: true }));
+        return;
+      }
+
+      if (action === "url") {
+        const url = cfg.url_path || cfg.url;
+        if (!url) return;
+        window.open(url, "_blank");
+        return;
+      }
+
+      if (action === "call-service") {
+        const svc = cfg.service;
+        if (!svc || svc.indexOf(".") === -1) return;
+        const [domain, service] = svc.split(".");
+        const data = cfg.service_data || {};
+        hass.callService(domain, service, data);
+        return;
+      }
+
+      if (action === "fire-dom-event") {
+        // Basic support: bubble a custom event with the action payload
+        this.dispatchEvent(new CustomEvent("ll-custom", { detail: cfg, bubbles: true, composed: true }));
+        return;
+      }
+    }
+
 
   }
 
@@ -2159,7 +2910,64 @@ row._tf = tf;
       secMat.appendChild(this._rowDotOff);
       root.appendChild(secMat);
 
-      // ---------- Color intervals ----------
+      
+      // ---------- Actions (tap/hold/double tap) ----------
+      const secActions = mkSection("Actions");
+      const actHint = document.createElement("div");
+      actHint.className = "hint";
+      actHint.innerText = "Configure what happens when you tap, hold or double-tap the card (Home Assistant standard actions).";
+      secActions.appendChild(actHint);
+
+      const mkActionRow = (labelPrefix) => {
+        const wrap = document.createElement("div");
+        wrap.className = "actionRow";
+
+        const sel = mkSelect(labelPrefix + " action", `${labelPrefix.toLowerCase()}_action_type`, [
+          ["none", "None"],
+          ["more-info", "More info"],
+          ["toggle", "Toggle"],
+          ["toggle-mode", "Toggle display mode"],
+          ["navigate", "Navigate"],
+          ["url", "URL"],
+          ["call-service", "Call service"],
+          ["fire-dom-event", "Fire DOM event"],
+        ]);
+
+        const nav = mkText(labelPrefix + " navigation path", `${labelPrefix.toLowerCase()}_navigation_path`, "text", "/lovelace/0");
+        const url = mkText(labelPrefix + " URL", `${labelPrefix.toLowerCase()}_url`, "text", "https://...");
+        const svc = mkText(labelPrefix + " service (domain.service)", `${labelPrefix.toLowerCase()}_service`, "text", "light.toggle");
+        const svcData = mkText(labelPrefix + " service_data (JSON)", `${labelPrefix.toLowerCase()}_service_data`, "text", '{"entity_id":"light.kitchen"}');
+
+        nav.classList.add("actionExtra");
+        url.classList.add("actionExtra");
+        svc.classList.add("actionExtra");
+        svcData.classList.add("actionExtra");
+
+        wrap.appendChild(sel);
+        wrap.appendChild(nav);
+        wrap.appendChild(url);
+        wrap.appendChild(svc);
+        wrap.appendChild(svcData);
+
+        wrap._sel = sel;
+        wrap._nav = nav;
+        wrap._url = url;
+        wrap._svc = svc;
+        wrap._svcData = svcData;
+        return wrap;
+      };
+
+      this._tapActRow = mkActionRow("Tap");
+      this._holdActRow = mkActionRow("Hold");
+      this._dblActRow = mkActionRow("Double");
+
+      secActions.appendChild(this._tapActRow);
+      secActions.appendChild(this._holdActRow);
+      secActions.appendChild(this._dblActRow);
+
+      root.appendChild(secActions);
+
+// ---------- Color intervals ----------
       const secIntervals = mkSection("Color intervals");
       const intervalHeader = document.createElement("div");
       intervalHeader.className = "rowHeader";
@@ -2469,8 +3277,10 @@ row._tf = tf;
       secProg.appendChild(pbWrap);
 
       this._slideProgMin = mkText("Progress min", "__slide_progress_min", "number", "0");
+      tuneNumericTextfield(this._slideProgMin, { allowNegative: true, allowDecimal: true });
       secProg.appendChild(this._slideProgMin);
       this._slideProgMax = mkText("Progress max", "__slide_progress_max", "number", "100");
+      tuneNumericTextfield(this._slideProgMax, { allowNegative: true, allowDecimal: true });
       secProg.appendChild(this._slideProgMax);
 
       this._slideProgColorMode = mkSelect("Progressbar colors", "__slide_progress_color_mode", [
@@ -2478,6 +3288,34 @@ row._tf = tf;
         ["intervals", "Use all interval colors"],
       ]);
       secProg.appendChild(this._slideProgColorMode);
+
+      const btnPreset = mkButton("Create Progressbar (preset)", () => this._applyProgressPreset());
+      btnPreset.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        // Apply a safe preset to the current slide: enable matrix_progress and set common defaults.
+        const slides = (this._config.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+        const idx = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+        slides[idx] = {
+          ...slides[idx],
+          matrix_progress: true,
+          progress_min: 0,
+          progress_max: 100,
+          progress_color_mode: "active",
+        };
+        const next = { ...this._config, slides };
+        // keep row mirror
+        if (Array.isArray(next.rows) && next.rows[next.rows.length ? this._activeRow : 0]) {
+          const r = next.rows[this._activeRow] || {};
+          const rs = (r.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+          rs[idx] = { ...rs[idx], ...slides[idx] };
+          const rows = [...next.rows];
+          rows[this._activeRow] = { ...r, slides: rs };
+          next.rows = rows;
+        }
+        this._commitFull(next);
+        this._sync();
+      });
+      secProg.appendChild(btnPreset);
 
       this._slideEditor.appendChild(secProg);
 
@@ -2496,10 +3334,13 @@ row._tf = tf;
 
       const secSwitch = mkSection("Slide switch settings");
       this._slideStay = mkText("Stay seconds", "__slide_stay_s", "number", "3");
+      tuneNumericTextfield(this._slideStay, { allowNegative: false, allowDecimal: true });
       secSwitch.appendChild(this._slideStay);
       this._slideOut = mkText("Out seconds", "__slide_out_s", "number", "0.5");
+      tuneNumericTextfield(this._slideOut, { allowNegative: false, allowDecimal: true });
       secSwitch.appendChild(this._slideOut);
       this._slideIn = mkText("In seconds", "__slide_in_s", "number", "0.5");
+      tuneNumericTextfield(this._slideIn, { allowNegative: false, allowDecimal: true });
       secSwitch.appendChild(this._slideIn);
 
       const { wrap: fadeWrap, sw: fadeSw } = mkSwitch("Fade toggle", "__slide_fade");
@@ -2519,6 +3360,7 @@ row._tf = tf;
         ["run_bottom", "Bottom"],
         ["billboard", "Billboard"],
         ["matrix", "Matrix"],
+        ["fade", "Fade (calm)"],
       ]);
       secSwitch.appendChild(this._slideShowStyle);
 
@@ -2529,6 +3371,7 @@ row._tf = tf;
         ["run_bottom", "Bottom"],
         ["billboard", "Billboard"],
         ["matrix", "Matrix"],
+        ["fade", "Fade (calm)"],
       ]);
       this._hideStyleWrap = document.createElement("div");
       this._hideStyleWrap.appendChild(this._slideHideStyle);
@@ -2566,15 +3409,15 @@ row._tf = tf;
         }
         
 
-        .colorRow { display:flex; align-items:flex-end; gap:10px; }
-        .colorRow ha-textfield { flex: 1 1 auto; }
+        .colorRow { display:grid; grid-template-columns: 1fr 44px; align-items:end; gap:10px; }
+        .colorRow ha-textfield { width: 100%; }
 
         .colorBtn{
           width: 44px;
-          height: 38px;
+          height: 44px;
           padding: 0;
           border: 1px solid rgba(0,0,0,0.25);
-          border-radius: 6px;
+          border-radius: 8px;
           background: transparent;
           cursor: pointer;
         }
@@ -2613,11 +3456,25 @@ row._tf = tf;
           gap:8px;
         }
         .intervalRow{
+          display:flex;
+          flex-direction:column;
+          gap:10px;
+        }
+        .intervalRow1{
           display:grid;
-          grid-template-columns: 1fr 1fr 1.2fr 1.2fr auto;
+          grid-template-columns: minmax(90px, 120px) minmax(90px, 120px) minmax(140px, 1fr) minmax(220px, 2fr) minmax(90px, 110px) minmax(170px, 1fr);
           gap:10px;
           align-items:end;
         }
+        .intervalSpacer{ min-height:1px; }
+
+        .intervalRow2{
+          display:grid;
+          grid-template-columns: minmax(170px, 1fr) minmax(170px, 1fr) auto;
+          gap:10px;
+          align-items:end;
+        }
+        .intervalRow ha-select { width: 100%; }
         .intervalRow mwc-icon-button{
           margin-bottom: 6px;
         }
@@ -2801,7 +3658,11 @@ row._tf = tf;
           width: auto;
           border-radius: 10px;
         }
-      `;
+      
+        .hint{ font-size:12px; opacity:.75; }
+        .actionRow{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; align-items:end; }
+        .actionExtra{ }
+`;
 
       this.innerHTML = "";
       this.appendChild(style);
@@ -2820,6 +3681,8 @@ row._tf = tf;
 
     _sync() {
       if (!this._config) return;
+      this._isSyncing = true;
+      try {
 
       // Global
       this._elRenderStyle.value = this._config.render_style || "segment";
@@ -2854,21 +3717,48 @@ row._tf = tf;
       this._rowDotOff.closest(".section").style.display = (st === "matrix") ? "flex" : "none";
 
       // Intervals + Slides
+
+      // Actions (global)
+      const syncAct = (rowEl, act, prefix) => {
+        if (!rowEl) return;
+        const sel = rowEl._sel;
+        const nav = rowEl._nav;
+        const url = rowEl._url;
+        const svc = rowEl._svc;
+        const svcData = rowEl._svcData;
+
+        const actionType = (act && act.action) ? String(act.action) : "none";
+        sel.value = actionType;
+
+        // Store helper values so _commit can map them
+        this._config[`${prefix}_action_type`] = actionType;
+        this._config[`${prefix}_navigation_path`] = (act && act.navigation_path) ? String(act.navigation_path) : "";
+        this._config[`${prefix}_url`] = (act && (act.url_path || act.url)) ? String(act.url_path || act.url) : "";
+        this._config[`${prefix}_service`] = (act && act.service) ? String(act.service) : "";
+        this._config[`${prefix}_service_data`] = (act && act.service_data) ? JSON.stringify(act.service_data) : "";
+
+        nav.value = this._config[`${prefix}_navigation_path`] || "";
+        url.value = this._config[`${prefix}_url`] || "";
+        svc.value = this._config[`${prefix}_service`] || "";
+        svcData.value = this._config[`${prefix}_service_data`] || "";
+
+        const showNav = actionType === "navigate";
+        const showUrl = actionType === "url";
+        const showSvc = actionType === "call-service" || actionType === "fire-dom-event";
+
+        nav.style.display = showNav ? "" : "none";
+        url.style.display = showUrl ? "" : "none";
+        svc.style.display = showSvc ? "" : "none";
+        svcData.style.display = showSvc ? "" : "none";
+      };
+
+      syncAct(this._tapActRow, this._config.tap_action, "tap");
+      syncAct(this._holdActRow, this._config.hold_action, "hold");
+      syncAct(this._dblActRow, this._config.double_tap_action, "double");
+
       this._renderIntervals();
 
-      if (!Array.isArray(this._config.rows) || this._config.rows.length === 0) {
-        const baseSlides = (Array.isArray(this._config.slides) && this._config.slides.length)
-          ? this._config.slides
-          : [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
-        this._config.rows = [{ slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
-      } else {
-        this._config.rows = this._config.rows.map(r => {
-          const slides = (Array.isArray(r?.slides) && r.slides.length)
-            ? r.slides
-            : [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
-          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
-        });
-      }
+      this._config.rows = normalizeRowsConfig(this._config.rows, this._config.slides);
 
       if (typeof this._activeRow !== "number") this._activeRow = 0;
       this._activeRow = clampInt(this._activeRow, 0, this._config.rows.length - 1);
@@ -2890,6 +3780,9 @@ row._tf = tf;
       this._renderSlidesList();
       this._syncSlideEditor();
       this._syncSlideButtons();
+      } finally {
+        this._isSyncing = false;
+      }
     }
 
     _syncSlideButtons() {
@@ -3072,13 +3965,26 @@ row._tf = tf;
       const list = this._slideIntervalList;
       list.innerHTML = "";
 
+      const _rs = String(this._config.render_style || "segment").toLowerCase();
+      const _isPlain = (_rs === "plain");
+      const _isSegOrMat = (_rs === "segment" || _rs === "matrix");
+
       intervals.forEach((it, idx) => {
+        const wrap = document.createElement("div");
+        wrap.className = "intervalRow";
+
         const row = document.createElement("div");
-        row.className = "intervalRow";
+        row.className = "intervalRow1";
+
+        const row2 = document.createElement("div");
+        row2.className = "intervalRow2";
+
+        wrap.appendChild(row);
+        wrap.appendChild(row2);
 
         const from = document.createElement("ha-textfield");
         from.label = "Value from";
-        from.type = "number";
+        tuneNumericTextfield(from, { allowNegative: true, allowDecimal: true });
         from.value = (typeof it.from === "number" || typeof it.from === "string") ? String(it.from) : "";
         from.dataset.slideIntervalIndex = String(idx);
         from.dataset.slideIntervalKey = "from";
@@ -3087,7 +3993,7 @@ row._tf = tf;
 
         const to = document.createElement("ha-textfield");
         to.label = "To";
-        to.type = "number";
+        tuneNumericTextfield(to, { allowNegative: true, allowDecimal: true });
         to.value = (typeof it.to === "number" || typeof it.to === "string") ? String(it.to) : "";
         to.dataset.slideIntervalIndex = String(idx);
         to.dataset.slideIntervalKey = "to";
@@ -3098,10 +4004,31 @@ row._tf = tf;
         match.label = "Match value";
         match.placeholder = "e.g. on, off, open, closed";
         match.value = (typeof it.match === "string") ? it.match : "";
-        match.dataset.intervalIndex = String(idx);
-        match.dataset.intervalKey = "match";
+        match.dataset.slideIntervalIndex = String(idx);
+        match.dataset.slideIntervalKey = "match";
         match.addEventListener("change", (e) => this._onSlideIntervalChange(e));
         match.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
+        const newValue = document.createElement("ha-textfield");
+        newValue.label = "NewValue (optional)";
+        newValue.placeholder = "e.g. <value>°C <thermometer> or Too hot!";
+        newValue.value = (typeof it.new_value === "string") ? it.new_value : "";
+        newValue.dataset.slideIntervalIndex = String(idx);
+        newValue.dataset.slideIntervalKey = "new_value";
+        newValue.addEventListener("change", (e) => this._onSlideIntervalChange(e));
+        newValue.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
+        const neonStrength = document.createElement("ha-textfield");
+        neonStrength.label = "Neon %";
+        tuneNumericTextfield(neonStrength, { allowNegative: false, allowDecimal: false });
+        neonStrength.step = "1";
+        neonStrength.placeholder = "0";
+        neonStrength.value = (typeof it.neon_strength === "number" || typeof it.neon_strength === "string") ? String(it.neon_strength) : "";
+        neonStrength.dataset.slideIntervalIndex = String(idx);
+        neonStrength.dataset.slideIntervalKey = "neon_strength";
+        neonStrength.addEventListener("change", (e) => this._onSlideIntervalChange(e));
+        neonStrength.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
 
         const colorRow = document.createElement("div");
         colorRow.className = "colorRow";
@@ -3129,6 +4056,94 @@ row._tf = tf;
         colorRow.appendChild(tf);
         colorRow.appendChild(btn);
 
+        // Gradient (only for Segment + Matrix). Enabled when Color To is set.
+        const colorToRow = document.createElement("div");
+        colorToRow.className = "colorRow";
+        const tfTo = document.createElement("ha-textfield");
+        tfTo.label = "Color To (gradient)";
+        tfTo.value = String(it.color_to || "").toUpperCase();
+        tfTo.dataset.slideIntervalIndex = String(idx);
+        tfTo.dataset.slideIntervalKey = "color_to";
+        tfTo.addEventListener("change", (e) => this._onSlideIntervalChange(e));
+        tfTo.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
+
+        const btnTo = document.createElement("input");
+        btnTo.type = "color";
+        btnTo.className = "colorBtn";
+        btnTo.value = (tfTo.value && /^#/.test(tfTo.value)) ? tfTo.value : "#000000";
+        btnTo.addEventListener("input", (e) => {
+          const v = String(e.target.value || "").toUpperCase();
+          tfTo.value = v;
+        });
+        btnTo.addEventListener("change", (e) => {
+          const v = String(e.target.value || "").toUpperCase();
+          tfTo.value = v;
+          this._setSlideIntervalValue(idx, "color_to", v, /*noSync*/ true);
+        });
+        colorToRow.appendChild(tfTo);
+        colorToRow.appendChild(btnTo);
+
+        const gradStyle = document.createElement("ha-select");
+        gradStyle.label = "Gradient style";
+        gradStyle.dataset.slideIntervalIndex = String(idx);
+        gradStyle.dataset.slideIntervalKey = "gradient_style";
+        const gs = String(it.gradient_style || "linear").toLowerCase();
+
+        // Use .value to keep HA editor in sync (selected attr is unreliable across versions)
+        gradStyle.innerHTML = `
+          <mwc-list-item value="linear">Linear</mwc-list-item>
+          <mwc-list-item value="two-tone">Two-tone</mwc-list-item>
+          <mwc-list-item value="inside-out">Inside-out</mwc-list-item>
+          <mwc-list-item value="outside-in">Outside-in</mwc-list-item>
+        `;
+        gradStyle.value = gs || "linear";
+                // IMPORTANT: ha-select/mwc-select can close the HA visual editor if we emit config-changed
+        // while the dropdown menu is still closing, or if events bubble to HA's dialog handlers.
+        // Strategy: stop propagation + capture on change + commit on "closed".
+        const _stopGS = (e) => { try { e.stopPropagation(); } catch(_){} };
+        ["click","mousedown","mouseup","keydown","opened"].forEach((ev) => gradStyle.addEventListener(ev, _stopGS));
+        gradStyle.__asdcPending = null;
+
+        const _captureGS = (val) => {
+          const next = String(val || "linear").trim().toLowerCase() || "linear";
+          const cur = String(it?.gradient_style || gradStyle.value || "linear").trim().toLowerCase() || "linear";
+          if (next === cur) { gradStyle.__asdcPending = null; return; }
+          gradStyle.__asdcPending = next;
+        };
+
+        gradStyle.addEventListener("value-changed", (e) => {
+          if (this._isSyncing) return;
+          _stopGS(e);
+          _captureGS(this._eventValue(e, gradStyle));
+        });
+
+        gradStyle.addEventListener("selected", (e) => {
+          if (this._isSyncing) return;
+          _stopGS(e);
+          _captureGS(e?.detail?.value ?? gradStyle.value);
+        });
+
+        gradStyle.addEventListener("closed", (e) => {
+          if (this._isSyncing) return;
+          _stopGS(e);
+          const next = gradStyle.__asdcPending;
+          if (!next) return;
+          gradStyle.__asdcPending = null;
+          try {
+            this._setSlideIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
+          } catch (err) {
+            console.error("ASDC editor: gradient_style update failed", err);
+          }
+        });
+
+// Show/Hide per render style
+        if (_isSegOrMat) {
+          // ok
+        } else {
+          colorToRow.style.display = "none";
+          gradStyle.style.display = "none";
+        }
+
         const delTag = customElements.get("ha-button") ? "ha-button" : "mwc-button";
         const del = document.createElement(delTag);
         del.setAttribute("raised","");
@@ -3154,140 +4169,343 @@ row._tf = tf;
         row.appendChild(from);
         row.appendChild(to);
         row.appendChild(match);
+        row.appendChild(newValue);
+
+        // Neon % only for Plain text
+        if (_isPlain) {
+          row.appendChild(neonStrength);
+        } else {
+          const spacer = document.createElement("div");
+          spacer.className = "intervalSpacer";
+          row.appendChild(spacer);
+        }
+
         row.appendChild(colorRow);
-        row.appendChild(del);
-        list.appendChild(row);
+
+        // Gradient inputs only for Segment + Matrix (enabled if Color To is set)
+        if (_isSegOrMat) {
+          row2.appendChild(colorToRow);
+          row2.appendChild(gradStyle);
+        }
+
+        row2.appendChild(del);
+        list.appendChild(wrap);
       });
     }
 
     _onSlideIntervalChange(ev) {
-      const target = ev.target;
+      if (this._isSyncing) return;
+      const target = ev.currentTarget || ev.target;
       const idx = Number(target?.dataset?.slideIntervalIndex);
       const key = String(target?.dataset?.slideIntervalKey || "");
       if (!Number.isFinite(idx) || !key) return;
 
       const raw = this._eventValue(ev, target);
-      if (key === "color") {
+      if (key === "color" || key === "color_to") {
         const norm = this._rowText._normalizeHex(raw, false);
         if (norm === null) return;
         this._setSlideIntervalValue(idx, key, norm, /*noSync*/ true);
         return;
       }
 
-      const num = (raw === "" || raw === null || typeof raw === "undefined") ? null : Number(raw);
-      const val = Number.isFinite(num) ? num : null;
+      // String keys
+      if (key === "match" || key === "new_value" || key === "gradient_style") {
+        this._setSlideIntervalValue(idx, key, String(raw ?? ""), /*noSync*/ true);
+        return;
+      }
+
+      const num = parseEditorNumber(raw);
+      let val = Number.isFinite(num) ? num : null;
+
+      // Neon is integer percent (0..100), step 1 in editor.
+      if (key === "neon_strength" && val !== null) {
+        val = Math.round(val);
+      }
+
       this._setSlideIntervalValue(idx, key, val, /*noSync*/ true);
     }
 
     _setSlideIntervalValue(idx, key, value, noSync = false) {
       const next = { ...this._config };
-      const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
-      const si = clampInt(this._activeSlide || 0, 0, slides.length - 1);
-      const s = { ...slides[si] };
-      const intervals = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
+
+      // Intervals can be defined globally (legacy) or per slide (preferred).
+      const hasSlides = Array.isArray(next.slides) && next.slides.length > 0;
+
+      let intervals;
+      let slides = null;
+      let si = 0;
+      let s = null;
+
+      if (hasSlides) {
+        slides = (next.slides || []).map(sl => ({ ...DEFAULT_SLIDE, ...(sl || {}) }));
+        si = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+        s = { ...slides[si] };
+        intervals = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
+      } else {
+        intervals = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+      }
+
       const it = { ...(intervals[idx] || {}) };
 
       if (key === "from" || key === "to") {
-        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
+        const num = parseEditorNumber(value);
         it[key] = Number.isFinite(num) ? num : 0;
       } else if (key === "match") {
         it.match = String(value || "").trim();
+      } else if (key === "new_value") {
+        it.new_value = String(value || "");
+      } else if (key === "neon_strength") {
+        const num = parseEditorNumber(value);
+        it.neon_strength = Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : null;
       } else if (key === "color") {
         const s2 = String(value || "").trim();
         if (/^#([0-9a-fA-F]{3}){1,2}$/.test(s2)) it.color = s2.toUpperCase();
         else it.color = s2;
+      } else if (key === "color_to") {
+        const s2 = String(value || "").trim();
+        if (/^#([0-9a-fA-F]{3}){1,2}$/.test(s2)) it.color_to = s2.toUpperCase();
+        else it.color_to = s2;
+      } else if (key === "gradient_style") {
+        const nextGs = String(value || "linear").trim().toLowerCase() || "linear";
+        const prevGs = String(it.gradient_style || "linear").trim().toLowerCase() || "linear";
+        if (nextGs === prevGs) {
+          // Avoid redundant commits triggered by duplicate select events
+          return;
+        }
+        it.gradient_style = nextGs;
       } else {
         it[key] = value;
       }
+
       intervals[idx] = it;
-      s.color_intervals = intervals;
-      slides[si] = s;
-      next.slides = slides;
+
+      if (hasSlides) {
+        s.color_intervals = intervals;
+        slides[si] = s;
+        next.slides = slides;
+      } else {
+        next.color_intervals = intervals;
+      }
 
       this._commitFull(next);
       if (!noSync) this._sync();
     }
+
     _renderIntervals() {
       const list = this._intervalList;
+      if (!list) return;
       list.innerHTML = "";
-      const intervals = Array.isArray(this._config.color_intervals) ? this._config.color_intervals : [];
-      intervals.forEach((it, idx) => {
-        const row = document.createElement("div");
-        row.className = "intervalRow";
 
+      // Intervals can exist globally (legacy) and/or per-slide.
+      // Prefer per-slide if it has any intervals, otherwise fall back to global.
+      const hasSlides = Array.isArray(this._config?.slides) && this._config.slides.length > 0;
+      const slides = hasSlides ? this._config.slides : null;
+      const si = hasSlides ? clampInt(this._activeSlide || 0, 0, slides.length - 1) : 0;
+      const slideObj = hasSlides ? (slides[si] || {}) : null;
+
+      const slideIntervals = (hasSlides && Array.isArray(slideObj.color_intervals)) ? slideObj.color_intervals : [];
+      const globalIntervals = Array.isArray(this._config.color_intervals) ? this._config.color_intervals : [];
+
+      const useSlideIntervals = slideIntervals.length > 0 || globalIntervals.length === 0;
+      this._intervalSource = useSlideIntervals ? "slide" : "global";
+      const intervals = useSlideIntervals ? slideIntervals : globalIntervals;
+
+      const rs = String(this._config.render_style || "segment").toLowerCase();
+      const isPlain = (rs === "plain");
+      const isSegOrMat = (rs === "segment" || rs === "matrix");
+
+      const setFieldMeta = (el, idx, key) => {
+        el.dataset.intervalIndex = String(idx);
+        el.dataset.intervalKey = String(key);
+      };
+
+      intervals.forEach((it, idx) => {
+        const wrap = document.createElement("div");
+        wrap.className = "intervalRow";
+
+        const row1 = document.createElement("div");
+        row1.className = "intervalRow1";
+
+        const row2 = document.createElement("div");
+        row2.className = "intervalRow2";
+
+        wrap.appendChild(row1);
+        wrap.appendChild(row2);
+
+        // --- Row 1: from / to / match / new_value / neon (plain only) / color ---
         const from = document.createElement("ha-textfield");
         from.label = "Value from";
-        from.type = "number";
-        from.value = (typeof it.from === "number" || typeof it.from === "string") ? String(it.from) : "";
-        from.dataset.intervalIndex = String(idx);
-        from.dataset.intervalKey = "from";
+        tuneNumericTextfield(from, { allowNegative: true, allowDecimal: true });
+        from.value = (it?.from !== undefined && it?.from !== null) ? String(it.from) : "";
+        setFieldMeta(from, idx, "from");
         from.addEventListener("change", (e) => this._onIntervalChange(e));
         from.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
         const to = document.createElement("ha-textfield");
         to.label = "To";
-        to.type = "number";
-        to.value = (typeof it.to === "number" || typeof it.to === "string") ? String(it.to) : "";
-        to.dataset.intervalIndex = String(idx);
-        to.dataset.intervalKey = "to";
+        tuneNumericTextfield(to, { allowNegative: true, allowDecimal: true });
+        to.value = (it?.to !== undefined && it?.to !== null) ? String(it.to) : "";
+        setFieldMeta(to, idx, "to");
         to.addEventListener("change", (e) => this._onIntervalChange(e));
         to.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
         const match = document.createElement("ha-textfield");
-        match.label = "Match value";
-        match.placeholder = "e.g. on, off, open, closed";
-        match.value = (typeof it.match === "string") ? it.match : "";
-        match.dataset.intervalIndex = String(idx);
-        match.dataset.intervalKey = "match";
+        match.label = "Match (optional)";
+        match.value = (typeof it?.match === "string") ? it.match : "";
+        setFieldMeta(match, idx, "match");
         match.addEventListener("change", (e) => this._onIntervalChange(e));
         match.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
+        const newVal = document.createElement("ha-textfield");
+        newVal.label = "New value";
+        newVal.value = (typeof it?.new_value === "string") ? it.new_value : "";
+        setFieldMeta(newVal, idx, "new_value");
+        newVal.addEventListener("change", (e) => this._onIntervalChange(e));
+        newVal.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+
+        const neon = document.createElement("ha-textfield");
+        neon.label = "Neon %";
+        tuneNumericTextfield(neon, { allowNegative: false, allowDecimal: false });
+        neon.step = "1";
+        neon.value = (it?.neon_strength !== undefined && it?.neon_strength !== null) ? String(it.neon_strength) : "0";
+        setFieldMeta(neon, idx, "neon_strength");
+        neon.addEventListener("change", (e) => this._onIntervalChange(e));
+        neon.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+
         const colorRow = document.createElement("div");
         colorRow.className = "colorRow";
-        const tf = document.createElement("ha-textfield");
-        tf.label = "Color";
-        tf.value = String(it.color || this._config.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
-        tf.dataset.intervalIndex = String(idx);
-        tf.dataset.intervalKey = "color";
-        tf.addEventListener("change", (e) => this._onIntervalChange(e));
-        tf.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+        const color = document.createElement("ha-textfield");
+        color.label = "Color";
+        color.value = String(it?.color || this._config.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
+        setFieldMeta(color, idx, "color");
+        color.addEventListener("change", (e) => this._onIntervalChange(e));
+        color.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
-        const btn = document.createElement("input");
-        btn.type = "color";
-        btn.className = "colorBtn";
-        btn.value = (tf.value && /^#/.test(tf.value)) ? tf.value : "#000000";
-        btn.addEventListener("input", (e) => {
-          const v = String(e.target.value || "").toUpperCase();
-          tf.value = v;
-          // no commit while picker is open
-        });
-        btn.addEventListener("change", (e) => {
-          const v = String(e.target.value || "").toUpperCase();
-          tf.value = v;
-          this._setIntervalValue(idx, "color", v, /*noSync*/ true);
-        });
-        colorRow.appendChild(tf);
-        colorRow.appendChild(btn);
-
-        const delTag = customElements.get("ha-button") ? "ha-button" : "mwc-button";
-        const del = document.createElement(delTag);
-        del.setAttribute("raised","");
-        del.classList.add("asdcBtn");
-        del.setAttribute("label","Delete");
-        del.textContent = "Delete";
-        del.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this._deleteInterval(idx);
+        const colorBtn = document.createElement("input");
+        colorBtn.type = "color";
+        colorBtn.className = "colorBtn";
+        colorBtn.value = (/^#([0-9a-f]{6})$/i.test(color.value)) ? color.value : "#000000";
+        colorBtn.addEventListener("input", (e) => { color.value = String(e.target.value || "").toUpperCase(); });
+        colorBtn.addEventListener("change", (e) => {
+          color.value = String(e.target.value || "").toUpperCase();
+          // commit immediately (no dropdown menu lifecycle to fight)
+          this._setIntervalValue(idx, "color", color.value, /*noSync*/ true);
         });
 
-        row.appendChild(from);
-        row.appendChild(to);
-        row.appendChild(match);
-        row.appendChild(colorRow);
-        row.appendChild(del);
+        colorRow.appendChild(color);
+        colorRow.appendChild(colorBtn);
 
-        list.appendChild(row);
+        row1.appendChild(from);
+        row1.appendChild(to);
+        row1.appendChild(match);
+        row1.appendChild(newVal);
+        if (isPlain) {
+          row1.appendChild(neon);
+        } else {
+          const spacer = document.createElement("div");
+          spacer.className = "intervalSpacer";
+          row1.appendChild(spacer);
+        }
+        row1.appendChild(colorRow);
+
+        // --- Row 2: Color To + Gradient style (segment/matrix only) + Delete ---
+        if (isSegOrMat) {
+          const colorToRow = document.createElement("div");
+          colorToRow.className = "colorRow";
+
+          const colorTo = document.createElement("ha-textfield");
+          colorTo.label = "Color To";
+          colorTo.value = String(it?.color_to || "").toUpperCase();
+          setFieldMeta(colorTo, idx, "color_to");
+          colorTo.addEventListener("change", (e) => this._onIntervalChange(e));
+          colorTo.addEventListener("value-changed", (e) => this._onIntervalChange(e));
+
+          const colorToBtn = document.createElement("input");
+          colorToBtn.type = "color";
+          colorToBtn.className = "colorBtn";
+          colorToBtn.value = (/^#([0-9a-f]{6})$/i.test(colorTo.value)) ? colorTo.value : "#000000";
+          colorToBtn.addEventListener("input", (e) => { colorTo.value = String(e.target.value || "").toUpperCase(); });
+          colorToBtn.addEventListener("change", (e) => {
+            colorTo.value = String(e.target.value || "").toUpperCase();
+            this._setIntervalValue(idx, "color_to", colorTo.value, /*noSync*/ true);
+          });
+
+          colorToRow.appendChild(colorTo);
+          colorToRow.appendChild(colorToBtn);
+
+          const gradStyle = document.createElement("ha-select");
+          gradStyle.label = "Gradient style";
+          // IMPORTANT: use dataset keys expected by _onIntervalChange (and set .value)
+          setFieldMeta(gradStyle, idx, "gradient_style");
+          gradStyle.innerHTML = `
+            <mwc-list-item value="linear">Linear</mwc-list-item>
+            <mwc-list-item value="two-tone">Two-tone</mwc-list-item>
+            <mwc-list-item value="inside-out">Inside-out</mwc-list-item>
+            <mwc-list-item value="outside-in">Outside-in</mwc-list-item>
+          `;
+          gradStyle.value = String(it?.gradient_style || "linear").toLowerCase();
+
+                    // IMPORTANT: ha-select/mwc-select can close the HA visual editor if we emit config-changed
+          // while the dropdown menu is still closing, or if events bubble to HA's dialog handlers.
+          // Strategy:
+          // 1) Stop propagation for the select's interaction events.
+          // 2) Capture chosen value on value-changed/selected (no commit).
+          // 3) Commit on "closed" (menu teardown finished).
+          const _stopGS = (e) => { try { e.stopPropagation(); } catch(_){} };
+          ["click","mousedown","mouseup","keydown","opened"].forEach((ev) => gradStyle.addEventListener(ev, _stopGS));
+          gradStyle.__asdcPending = null;
+
+          const _captureGS = (val) => {
+            const next = String(val || "linear").trim().toLowerCase() || "linear";
+            const cur = String((it && it.gradient_style) || gradStyle.value || "linear").trim().toLowerCase() || "linear";
+            if (next === cur) { gradStyle.__asdcPending = null; return; }
+            gradStyle.__asdcPending = next;
+          };
+
+          gradStyle.addEventListener("value-changed", (e) => {
+            if (this._isSyncing) return;
+            _stopGS(e);
+            _captureGS(this._eventValue(e, gradStyle));
+          });
+
+          gradStyle.addEventListener("selected", (e) => {
+            if (this._isSyncing) return;
+            _stopGS(e);
+            _captureGS(e?.detail?.value ?? gradStyle.value);
+          });
+
+          gradStyle.addEventListener("closed", (e) => {
+            if (this._isSyncing) return;
+            _stopGS(e);
+            const next = gradStyle.__asdcPending;
+            if (!next) return;
+            gradStyle.__asdcPending = null;
+            try {
+              this._setIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
+            } catch (err) {
+              console.error("ASDC editor: gradient_style update failed", err);
+            }
+          });
+
+row2.appendChild(colorToRow);
+          row2.appendChild(gradStyle);
+        } else {
+          const spacer = document.createElement("div");
+          spacer.className = "spacer";
+          row2.appendChild(spacer);
+        }
+
+        const del = document.createElement("button");
+        del.className = "btnDelete";
+        del.innerText = "Delete";
+        del.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          this._delInterval(idx);
+        });
+        row2.appendChild(del);
+
+        list.appendChild(wrap);
       });
     }
 
@@ -3380,56 +4598,86 @@ row._tf = tf;
     }
     _commit(key, value) {
       const next = { ...(this._config || DEFAULTS_GLOBAL), ...(this._origType ? { type: this._origType } : {}), [key]: value };
+      // Map flat action editor fields -> HA action config objects
+      const applyAction = (prefix, targetKey) => {
+        const t = next[`${prefix}_action_type`];
+        if (!t) return;
+        const act = { action: t };
+        if (t === "navigate" && next[`${prefix}_navigation_path`]) act.navigation_path = next[`${prefix}_navigation_path`];
+        if (t === "url" && next[`${prefix}_url`]) act.url_path = next[`${prefix}_url`];
+        if ((t === "call-service" || t === "fire-dom-event") && next[`${prefix}_service`]) act.service = next[`${prefix}_service`];
+        if (t === "call-service" || t === "fire-dom-event") {
+          const raw = next[`${prefix}_service_data`];
+          if (raw) {
+            try { act.service_data = JSON.parse(raw); } catch (e) { /* ignore parse errors */ }
+          }
+        }
+        next[targetKey] = act;
+      };
+
+      applyAction("tap", "tap_action");
+      applyAction("hold", "hold_action");
+      applyAction("double", "double_tap_action");
+
+      // Keep helper keys in the *editor* state (so UI can react instantly),
+      // but strip them from the emitted Lovelace config.
+      const _stripActionHelpers = (obj) => {
+        const out = { ...obj };
+        ["tap","hold","double"].forEach(p => {
+          delete out[`${p}_action_type`];
+          delete out[`${p}_navigation_path`];
+          delete out[`${p}_url`];
+          delete out[`${p}_service`];
+          delete out[`${p}_service_data`];
+        });
+        return out;
+      };
+
       next.color_intervals = this._config.color_intervals || [];
 
       // Preserve / normalize rows
-      if (!Array.isArray(this._config.rows) || this._config.rows.length === 0) {
-        const baseSlides = this._config.slides || [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
-        next.rows = [{ slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
-      } else {
-        next.rows = this._config.rows.map(r => {
-          const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
-          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
-        });
-      }
+      next.rows = normalizeRowsConfig(this._config.rows, this._config.slides || [{ ...DEFAULT_SLIDE, title:"Slide 1" }]);
 
       // Canonical top-level slides mirrors Row 1
       next.slides = next.rows[0].slides;
 
+      // Keep internal editor state (with helper keys) so conditional fields stay visible while editing
       this._config = next;
 
+      // Emit a clean config (without helper keys)
+      const emitCfg = _stripActionHelpers(next);
+
       this.dispatchEvent(new CustomEvent("config-changed", {
-        detail: { config: next },
+        detail: { config: emitCfg },
         bubbles: true,
         composed: true,
       }));
+
+      // Refresh editor UI so extra fields appear/disappear immediately
+      try { this._sync(); } catch (e) {}
     }
 
     _commitFull(nextConfig) {
       if (this._origType && !nextConfig.type) nextConfig.type = this._origType;
 
       // Ensure rows exist
-      let rows = [];
-      if (Array.isArray(nextConfig.rows) && nextConfig.rows.length) {
-        rows = nextConfig.rows.map(r => {
-          const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
-          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
-        });
-      } else {
-        const baseSlides = (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
+      let rows = normalizeRowsConfig(
+        nextConfig.rows,
+        (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
           ? nextConfig.slides
-          : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
-        rows = [{ is_default: true, slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
-      }
+          : [{ ...DEFAULT_SLIDE, title:"Slide 1" }]
+      );
 
       // Ensure exactly one default row flag exists (movable but not deletable)
       if (!rows.some(r => r && r.is_default)) {
         if (rows[0]) rows[0].is_default = true;
       }
       const ar = clampInt(this._activeRow || 0, 0, rows.length - 1);
-      const activeSlides = (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
-        ? nextConfig.slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }))
-        : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+      const activeSlides = normalizeSlidesConfig(
+        (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
+          ? nextConfig.slides
+          : [{ ...DEFAULT_SLIDE, title:"Slide 1" }]
+      );
 
       rows[ar] = { ...(rows[ar] || {}), slides: activeSlides };
       nextConfig.rows = rows;
@@ -3448,11 +4696,29 @@ row._tf = tf;
 
     _eventValue(ev, target) {
       if (ev && ev.detail && typeof ev.detail.value !== "undefined") return ev.detail.value;
-      return target.value;
+
+      // ha-select / mwc-select: value handling can differ between events
+      const t = target;
+      try {
+        const name = (t && (t.localName || t.tagName || "")).toString().toLowerCase();
+        if (name === "ha-select" || name === "mwc-select") {
+          if (typeof t.value !== "undefined" && t.value !== null && String(t.value) !== "") return t.value;
+          // Fallback: resolve from selected index and items
+          const sel = (typeof t.selected !== "undefined") ? Number(t.selected) : NaN;
+          const items = t.items || t.querySelectorAll?.("mwc-list-item");
+          if (Number.isFinite(sel) && items && items.length && items[sel]) {
+            const v = items[sel].getAttribute?.("value") ?? items[sel].value;
+            if (typeof v !== "undefined") return v;
+          }
+        }
+      } catch (e) {}
+
+      return t ? t.value : undefined;
     }
 
     _onChange(ev) {
-      const target = ev.target;
+      if (this._isSyncing) return;
+      const target = ev.currentTarget || ev.target;
       const key = target.configValue || target.dataset?.configValue;
       if (!key) return;
 
@@ -3493,6 +4759,18 @@ row._tf = tf;
       if (key.startsWith("__slide_")) {
         return this._onSlideChange(key, ev);
       }
+      // Action editor fields (tap/hold/double): commit and re-sync so conditional fields show immediately
+      if (String(key).startsWith("tap_") || String(key).startsWith("hold_") || String(key).startsWith("double_")) {
+        this._commit(key, value);
+        this._sync();
+        return;
+      }
+
+      // Default commit for simple text/select fields
+      this._commit(key, value);
+      this._sync();
+      return;
+
     }
 
     _slideCommitField(field, newValue) {
@@ -3547,7 +4825,7 @@ row._tf = tf;
         return;
       }
       if (key === "__slide_title_icon_gap") {
-        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
+        const num = parseEditorNumber(v);
         const val = Number.isFinite(num) ? num : 6;
         this._slideCommitField("title_icon_gap", val);
         return;
@@ -3577,7 +4855,7 @@ row._tf = tf;
       }
 
       if (key === "__slide_progress_min" || key === "__slide_progress_max") {
-        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
+        const num = parseEditorNumber(v);
         const val = Number.isFinite(num) ? num : null;
         const field = (key === "__slide_progress_min") ? "progress_min" : "progress_max";
         this._slideCommitField(field, (val === null ? (field === "progress_min" ? 0 : 100) : val));
@@ -3586,7 +4864,7 @@ row._tf = tf;
 
 
       if (key === "__slide_decimals" || key === "__slide_auto_decimals") {
-        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
+        const num = parseEditorNumber(v);
         const val = Number.isFinite(num) ? num : null;
         this._slideCommitField(key === "__slide_decimals" ? "decimals" : "auto_decimals", val);
         return;
@@ -3605,7 +4883,7 @@ row._tf = tf;
       }
 
       if (key === "__slide_stay_s" || key === "__slide_out_s" || key === "__slide_in_s") {
-        const num = Number(v);
+        const num = parseEditorNumber(v);
         const val = Number.isFinite(num) ? num : 0;
         const field = (key === "__slide_stay_s") ? "stay_s" : (key === "__slide_out_s") ? "out_s" : "in_s";
         this._slideCommitField(field, val);
@@ -3669,46 +4947,117 @@ row._tf = tf;
 
     _addInterval() {
       const next = { ...this._config };
-      const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
-      ints.push({ from: 0, to: 0, color: (next.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase() });
-      next.color_intervals = ints;
+
+      const hasSlides = Array.isArray(next.slides) && next.slides.length > 0;
+      const useSlide = (this._intervalSource === "slide") && hasSlides;
+
+      if (useSlide) {
+        const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+        const si = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+        const s = { ...slides[si] };
+        const ints = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
+        ints.push({ from: 0, to: 0, color: (next.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase() });
+        s.color_intervals = ints;
+        slides[si] = s;
+        next.slides = slides;
+      } else {
+        const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+        ints.push({ from: 0, to: 0, color: (next.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase() });
+        next.color_intervals = ints;
+      }
+
       this._commitFull(next);
       this._sync();
     }
 
     _deleteInterval(idx) {
       const next = { ...this._config };
-      const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
-      ints.splice(idx, 1);
-      next.color_intervals = ints;
+
+      const hasSlides = Array.isArray(next.slides) && next.slides.length > 0;
+      const useSlide = (this._intervalSource === "slide") && hasSlides;
+
+      if (useSlide) {
+        const slides = (next.slides || []).map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+        const si = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+        const s = { ...slides[si] };
+        const ints = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
+        ints.splice(idx, 1);
+        s.color_intervals = ints;
+        slides[si] = s;
+        next.slides = slides;
+      } else {
+        const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+        ints.splice(idx, 1);
+        next.color_intervals = ints;
+      }
+
       this._commitFull(next);
       this._sync();
     }
 
     _setIntervalValue(idx, key, value, noSync) {
       const next = { ...this._config };
-      const ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+
+      const hasSlides = Array.isArray(next.slides) && next.slides.length > 0;
+      const useSlide = (this._intervalSource === "slide") && hasSlides;
+
+      let ints = [];
+      let slides = null;
+      let si = 0;
+      let s = null;
+
+      if (useSlide) {
+        slides = (next.slides || []).map(sl => ({ ...DEFAULT_SLIDE, ...(sl || {}) }));
+        si = clampInt(this._activeSlide || 0, 0, slides.length - 1);
+        s = { ...slides[si] };
+        ints = Array.isArray(s.color_intervals) ? [...s.color_intervals] : [];
+      } else {
+        ints = Array.isArray(next.color_intervals) ? [...next.color_intervals] : [];
+      }
+
       const it = { ...(ints[idx] || {}) };
 
       if (key === "from" || key === "to") {
-        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
+        const num = parseEditorNumber(value);
         it[key] = Number.isFinite(num) ? num : 0;
       } else if (key === "match") {
         it.match = String(value || "").trim();
-      } else if (key === "color") {
-        const s = String(value || "").trim();
-        if (/^#([0-9a-fA-F]{3}){1,2}$/.test(s)) it.color = s.toUpperCase();
+      } else if (key === "new_value") {
+        it.new_value = String(value || "");
+      } else if (key === "neon_strength") {
+        const num = parseEditorNumber(value);
+        it.neon_strength = Number.isFinite(num) ? Math.max(0, Math.min(100, Math.round(num))) : null;
+      } else if (key === "color" || key === "color_to") {
+        const norm = this._rowText._normalizeHex(String(value || ""), false);
+        if (norm === null) return;
+        it[key] = norm.toUpperCase();
+      } else if (key === "gradient_style") {
+        const gs = String(value || "linear").trim().toLowerCase() || "linear";
+        it.gradient_style = gs;
+      } else {
+        it[key] = value;
       }
+
       ints[idx] = it;
-      next.color_intervals = ints;
+
+      if (useSlide) {
+        s.color_intervals = ints;
+        slides[si] = s;
+        next.slides = slides;
+      } else {
+        next.color_intervals = ints;
+      }
+
       this._commitFull(next);
       if (!noSync) this._sync();
-        }
+    }
 
     _onIntervalChange(ev) {
-      const t = ev.target;
-      const idx = Number(t.dataset.intervalIndex);
-      const key = t.dataset.intervalKey;
+      if (this._isSyncing) return;
+      const t = ev.currentTarget || ev.target;
+      const idx = Number(t?.dataset?.intervalIndex);
+      const key = String(t?.dataset?.intervalKey || "");
+      if (!Number.isFinite(idx) || !key) return;
       const val = this._eventValue(ev, t);
       this._setIntervalValue(idx, key, val, /*noSync*/ true);
     }
