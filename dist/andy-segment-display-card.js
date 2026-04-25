@@ -909,70 +909,6 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
     el.classList.remove("asdc-anim");
   }
 
-  function parseEditorNumber(raw) {
-    if (raw === "" || raw === null || typeof raw === "undefined") return null;
-    if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
-
-    const s = String(raw).trim().replace(/\s+/g, "").replace(",", ".");
-    if (!s || s === "-" || s === "+" || s === "." || s === "," || s === "-." || s === "+.") return null;
-
-    const n = Number(s);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  function tuneNumericTextfield(tf, { allowNegative = false, allowDecimal = true } = {}) {
-    if (!tf) return tf;
-
-    const pattern = allowDecimal
-      ? (allowNegative ? "[-0-9.,]*" : "[0-9.,]*")
-      : (allowNegative ? "[-0-9]*" : "[0-9]*");
-
-    tf.type = "text";
-    tf.inputMode = allowDecimal ? "decimal" : "numeric";
-    tf.autocomplete = "off";
-    tf.spellcheck = false;
-    tf.setAttribute("type", "text");
-    tf.setAttribute("inputmode", allowDecimal ? "decimal" : "numeric");
-    tf.setAttribute("autocomplete", "off");
-    tf.setAttribute("spellcheck", "false");
-    tf.setAttribute("pattern", pattern);
-    return tf;
-  }
-
-  function normalizeSlideConfig(slide) {
-    return { ...DEFAULT_SLIDE, ...(slide || {}) };
-  }
-
-  function normalizeSlidesConfig(slides) {
-    if (Array.isArray(slides) && slides.length) {
-      return slides.map((s) => normalizeSlideConfig(s));
-    }
-    return [{ ...DEFAULT_SLIDE }];
-  }
-
-  function normalizeRowConfig(row) {
-    const base = { ...(row || {}) };
-
-    if (Array.isArray(base.slides) && base.slides.length) {
-      return { ...base, slides: normalizeSlidesConfig(base.slides) };
-    }
-
-    // Auto-entities and similar generators often provide row items directly as slide-like objects.
-    // Treat that shorthand as a single-slide row while preserving row flags like is_default.
-    const slideSource = { ...base };
-    delete slideSource.slides;
-    delete slideSource.is_default;
-
-    return { ...base, slides: normalizeSlidesConfig([slideSource]) };
-  }
-
-  function normalizeRowsConfig(rows, fallbackSlides) {
-    if (Array.isArray(rows) && rows.length) {
-      return rows.map((r) => normalizeRowConfig(r));
-    }
-    return [{ ...DEFAULT_ROW, is_default: true, slides: normalizeSlidesConfig(fallbackSlides) }];
-  }
-
   // -------------------- Config migration --------------------
   function migrateConfig(config) {
     const cfg = config || {};
@@ -990,7 +926,10 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
       global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
       global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
-      const rows = normalizeRowsConfig(cfg.rows, cfg.slides);
+      const rows = cfg.rows.map((r) => {
+        const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE }];
+        return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+      });
       // keep backward-compatible top-level slides as row 0
       return { ...(_type ? { type: _type } : {}), ...global, rows, slides: rows[0].slides };
     }
@@ -1006,7 +945,8 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
       global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
       global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
-      const normSlides = normalizeSlidesConfig(cfg.slides);
+      const slides = cfg.slides.length > 0 ? cfg.slides : [{ ...DEFAULT_SLIDE }];
+      const normSlides = slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
       return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
     }
 
@@ -1035,7 +975,7 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
     slide.leading_zero = cfg.leading_zero !== false;
     slide.show_unit = !!cfg.show_unit;
 
-    const normSlides = normalizeSlidesConfig([slide]);
+    const normSlides = [slide];
     return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
   }
 
@@ -1216,9 +1156,9 @@ _scheduleRender(force = false) {
       if (!paint) return "";
       return [
         paint.color || "",
-        paint.color_to || "",
-        paint.gradient_style || "",
-        paint.gradient_on ? "1" : "0"
+        paint.colorTo || "",
+        paint.gradStyle || "",
+        paint.gradMode || ""
       ].join("|");
     }
 
@@ -1255,9 +1195,13 @@ _scheduleRender(force = false) {
     _getRows() {
       const cfg = this._config || {};
       if (Array.isArray(cfg.rows) && cfg.rows.length) {
-        return cfg.rows;
+        return cfg.rows.map(r => ({
+          ...(r || {}),
+          slides: Array.isArray(r?.slides) && r.slides.length ? r.slides : [{ ...DEFAULT_SLIDE }],
+        }));
       }
-      return normalizeRowsConfig(null, cfg.slides);
+      const slides = Array.isArray(cfg.slides) && cfg.slides.length ? cfg.slides : [{ ...DEFAULT_SLIDE }];
+      return [{ ...DEFAULT_ROW, slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
     }
 
     _ensureRowState(count) {
@@ -2646,6 +2590,72 @@ _toggleRenderMode() {
       }
     }
 
+    _bindCompatSelect(sel, onCommit, { deferUntilClosed = false } = {}) {
+      if (!sel) return sel;
+
+      sel.__asdcPending = null;
+      sel.__asdcCommitted = null;
+
+      const stop = (e) => {
+        try { e.stopPropagation(); } catch (_) {}
+      };
+
+      const normalizeValue = (value) => String(value ?? "").trim();
+
+      const capture = (value) => {
+        const next = normalizeValue(value);
+        sel.__asdcPending = next;
+        return next;
+      };
+
+      const commitNow = (value) => {
+        const next = normalizeValue(value);
+        if (next === "") return;
+        if (sel.__asdcCommitted === next) return;
+        sel.__asdcCommitted = next;
+        sel.__asdcPending = null;
+
+        setTimeout(() => onCommit(next), 0);
+      };
+
+      sel.addEventListener("opened", stop);
+
+      sel.addEventListener("value-changed", (e) => {
+        if (this._isSyncing) return;
+        stop(e);
+        const next = capture(this._eventValue(e, sel));
+        if (!deferUntilClosed) commitNow(next);
+      });
+
+      sel.addEventListener("selected", (e) => {
+        if (this._isSyncing) return;
+        stop(e);
+        const next = capture(e?.detail?.value ?? sel.value);
+        if (!deferUntilClosed) commitNow(next);
+      });
+
+      sel.addEventListener("change", (e) => {
+        if (this._isSyncing) return;
+        stop(e);
+        const next = capture(this._eventValue(e, sel));
+        if (!deferUntilClosed) commitNow(next);
+      });
+
+      if (deferUntilClosed) {
+        sel.addEventListener("closed", (e) => {
+          if (this._isSyncing) return;
+          stop(e);
+          const next = sel.__asdcPending;
+          if (!next) return;
+          commitNow(next);
+        });
+      } else {
+        sel.addEventListener("closed", stop);
+      }
+
+      return sel;
+    }
+
     _buildOnce() {
       if (this._built) return;
       this._built = true;
@@ -2767,24 +2777,9 @@ row._tf = tf;
           sel.appendChild(item);
         });
 
-        const stop = (e) => e.stopPropagation();
-        sel.addEventListener("click", stop);
-        sel.addEventListener("opened", stop);
-        sel.addEventListener("closed", stop);
-        sel.addEventListener("keydown", stop);
-
-        sel.addEventListener("value-changed", (e) => {
-          e.stopPropagation();
-          this._onChange(e);
+        return this._bindCompatSelect(sel, (value) => {
+          this._onChange({ target: sel, detail: { value } });
         });
-
-        sel.addEventListener("selected", (e) => {
-          e.stopPropagation();
-          // Some HA builds only emit "selected" for ha-select; ensure we persist.
-          this._onChange({ target: sel, detail: { value: sel.value } });
-        });
-
-        return sel;
       };
 
       const mkIconPicker = (label, key) => {
@@ -3277,10 +3272,8 @@ row._tf = tf;
       secProg.appendChild(pbWrap);
 
       this._slideProgMin = mkText("Progress min", "__slide_progress_min", "number", "0");
-      tuneNumericTextfield(this._slideProgMin, { allowNegative: true, allowDecimal: true });
       secProg.appendChild(this._slideProgMin);
       this._slideProgMax = mkText("Progress max", "__slide_progress_max", "number", "100");
-      tuneNumericTextfield(this._slideProgMax, { allowNegative: true, allowDecimal: true });
       secProg.appendChild(this._slideProgMax);
 
       this._slideProgColorMode = mkSelect("Progressbar colors", "__slide_progress_color_mode", [
@@ -3334,13 +3327,10 @@ row._tf = tf;
 
       const secSwitch = mkSection("Slide switch settings");
       this._slideStay = mkText("Stay seconds", "__slide_stay_s", "number", "3");
-      tuneNumericTextfield(this._slideStay, { allowNegative: false, allowDecimal: true });
       secSwitch.appendChild(this._slideStay);
       this._slideOut = mkText("Out seconds", "__slide_out_s", "number", "0.5");
-      tuneNumericTextfield(this._slideOut, { allowNegative: false, allowDecimal: true });
       secSwitch.appendChild(this._slideOut);
       this._slideIn = mkText("In seconds", "__slide_in_s", "number", "0.5");
-      tuneNumericTextfield(this._slideIn, { allowNegative: false, allowDecimal: true });
       secSwitch.appendChild(this._slideIn);
 
       const { wrap: fadeWrap, sw: fadeSw } = mkSwitch("Fade toggle", "__slide_fade");
@@ -3758,7 +3748,19 @@ row._tf = tf;
 
       this._renderIntervals();
 
-      this._config.rows = normalizeRowsConfig(this._config.rows, this._config.slides);
+      if (!Array.isArray(this._config.rows) || this._config.rows.length === 0) {
+        const baseSlides = (Array.isArray(this._config.slides) && this._config.slides.length)
+          ? this._config.slides
+          : [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
+        this._config.rows = [{ slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      } else {
+        this._config.rows = this._config.rows.map(r => {
+          const slides = (Array.isArray(r?.slides) && r.slides.length)
+            ? r.slides
+            : [{ ...DEFAULT_SLIDE, title: "Slide 1" }];
+          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+        });
+      }
 
       if (typeof this._activeRow !== "number") this._activeRow = 0;
       this._activeRow = clampInt(this._activeRow, 0, this._config.rows.length - 1);
@@ -3984,7 +3986,7 @@ row._tf = tf;
 
         const from = document.createElement("ha-textfield");
         from.label = "Value from";
-        tuneNumericTextfield(from, { allowNegative: true, allowDecimal: true });
+        from.type = "number";
         from.value = (typeof it.from === "number" || typeof it.from === "string") ? String(it.from) : "";
         from.dataset.slideIntervalIndex = String(idx);
         from.dataset.slideIntervalKey = "from";
@@ -3993,7 +3995,7 @@ row._tf = tf;
 
         const to = document.createElement("ha-textfield");
         to.label = "To";
-        tuneNumericTextfield(to, { allowNegative: true, allowDecimal: true });
+        to.type = "number";
         to.value = (typeof it.to === "number" || typeof it.to === "string") ? String(it.to) : "";
         to.dataset.slideIntervalIndex = String(idx);
         to.dataset.slideIntervalKey = "to";
@@ -4020,7 +4022,7 @@ row._tf = tf;
 
         const neonStrength = document.createElement("ha-textfield");
         neonStrength.label = "Neon %";
-        tuneNumericTextfield(neonStrength, { allowNegative: false, allowDecimal: false });
+        neonStrength.type = "number";
         neonStrength.step = "1";
         neonStrength.placeholder = "0";
         neonStrength.value = (typeof it.neon_strength === "number" || typeof it.neon_strength === "string") ? String(it.neon_strength) : "";
@@ -4097,44 +4099,15 @@ row._tf = tf;
           <mwc-list-item value="outside-in">Outside-in</mwc-list-item>
         `;
         gradStyle.value = gs || "linear";
-                // IMPORTANT: ha-select/mwc-select can close the HA visual editor if we emit config-changed
-        // while the dropdown menu is still closing, or if events bubble to HA's dialog handlers.
-        // Strategy: stop propagation + capture on change + commit on "closed".
-        const _stopGS = (e) => { try { e.stopPropagation(); } catch(_){} };
-        ["click","mousedown","mouseup","keydown","opened"].forEach((ev) => gradStyle.addEventListener(ev, _stopGS));
-        gradStyle.__asdcPending = null;
-
-        const _captureGS = (val) => {
-          const next = String(val || "linear").trim().toLowerCase() || "linear";
+        this._bindCompatSelect(gradStyle, (next) => {
           const cur = String(it?.gradient_style || gradStyle.value || "linear").trim().toLowerCase() || "linear";
-          if (next === cur) { gradStyle.__asdcPending = null; return; }
-          gradStyle.__asdcPending = next;
-        };
-
-        gradStyle.addEventListener("value-changed", (e) => {
-          if (this._isSyncing) return;
-          _stopGS(e);
-          _captureGS(this._eventValue(e, gradStyle));
-        });
-
-        gradStyle.addEventListener("selected", (e) => {
-          if (this._isSyncing) return;
-          _stopGS(e);
-          _captureGS(e?.detail?.value ?? gradStyle.value);
-        });
-
-        gradStyle.addEventListener("closed", (e) => {
-          if (this._isSyncing) return;
-          _stopGS(e);
-          const next = gradStyle.__asdcPending;
-          if (!next) return;
-          gradStyle.__asdcPending = null;
+          if (next === cur) return;
           try {
             this._setSlideIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
           } catch (err) {
             console.error("ASDC editor: gradient_style update failed", err);
           }
-        });
+        }, { deferUntilClosed: true });
 
 // Show/Hide per render style
         if (_isSegOrMat) {
@@ -4214,7 +4187,7 @@ row._tf = tf;
         return;
       }
 
-      const num = parseEditorNumber(raw);
+      const num = (raw === "" || raw === null || typeof raw === "undefined") ? null : Number(raw);
       let val = Number.isFinite(num) ? num : null;
 
       // Neon is integer percent (0..100), step 1 in editor.
@@ -4248,14 +4221,14 @@ row._tf = tf;
       const it = { ...(intervals[idx] || {}) };
 
       if (key === "from" || key === "to") {
-        const num = parseEditorNumber(value);
+        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
         it[key] = Number.isFinite(num) ? num : 0;
       } else if (key === "match") {
         it.match = String(value || "").trim();
       } else if (key === "new_value") {
         it.new_value = String(value || "");
       } else if (key === "neon_strength") {
-        const num = parseEditorNumber(value);
+        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
         it.neon_strength = Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : null;
       } else if (key === "color") {
         const s2 = String(value || "").trim();
@@ -4335,7 +4308,7 @@ row._tf = tf;
         // --- Row 1: from / to / match / new_value / neon (plain only) / color ---
         const from = document.createElement("ha-textfield");
         from.label = "Value from";
-        tuneNumericTextfield(from, { allowNegative: true, allowDecimal: true });
+        from.type = "number";
         from.value = (it?.from !== undefined && it?.from !== null) ? String(it.from) : "";
         setFieldMeta(from, idx, "from");
         from.addEventListener("change", (e) => this._onIntervalChange(e));
@@ -4343,7 +4316,7 @@ row._tf = tf;
 
         const to = document.createElement("ha-textfield");
         to.label = "To";
-        tuneNumericTextfield(to, { allowNegative: true, allowDecimal: true });
+        to.type = "number";
         to.value = (it?.to !== undefined && it?.to !== null) ? String(it.to) : "";
         setFieldMeta(to, idx, "to");
         to.addEventListener("change", (e) => this._onIntervalChange(e));
@@ -4365,7 +4338,7 @@ row._tf = tf;
 
         const neon = document.createElement("ha-textfield");
         neon.label = "Neon %";
-        tuneNumericTextfield(neon, { allowNegative: false, allowDecimal: false });
+        neon.type = "number";
         neon.step = "1";
         neon.value = (it?.neon_strength !== undefined && it?.neon_strength !== null) ? String(it.neon_strength) : "0";
         setFieldMeta(neon, idx, "neon_strength");
@@ -4444,48 +4417,15 @@ row._tf = tf;
             <mwc-list-item value="outside-in">Outside-in</mwc-list-item>
           `;
           gradStyle.value = String(it?.gradient_style || "linear").toLowerCase();
-
-                    // IMPORTANT: ha-select/mwc-select can close the HA visual editor if we emit config-changed
-          // while the dropdown menu is still closing, or if events bubble to HA's dialog handlers.
-          // Strategy:
-          // 1) Stop propagation for the select's interaction events.
-          // 2) Capture chosen value on value-changed/selected (no commit).
-          // 3) Commit on "closed" (menu teardown finished).
-          const _stopGS = (e) => { try { e.stopPropagation(); } catch(_){} };
-          ["click","mousedown","mouseup","keydown","opened"].forEach((ev) => gradStyle.addEventListener(ev, _stopGS));
-          gradStyle.__asdcPending = null;
-
-          const _captureGS = (val) => {
-            const next = String(val || "linear").trim().toLowerCase() || "linear";
+          this._bindCompatSelect(gradStyle, (next) => {
             const cur = String((it && it.gradient_style) || gradStyle.value || "linear").trim().toLowerCase() || "linear";
-            if (next === cur) { gradStyle.__asdcPending = null; return; }
-            gradStyle.__asdcPending = next;
-          };
-
-          gradStyle.addEventListener("value-changed", (e) => {
-            if (this._isSyncing) return;
-            _stopGS(e);
-            _captureGS(this._eventValue(e, gradStyle));
-          });
-
-          gradStyle.addEventListener("selected", (e) => {
-            if (this._isSyncing) return;
-            _stopGS(e);
-            _captureGS(e?.detail?.value ?? gradStyle.value);
-          });
-
-          gradStyle.addEventListener("closed", (e) => {
-            if (this._isSyncing) return;
-            _stopGS(e);
-            const next = gradStyle.__asdcPending;
-            if (!next) return;
-            gradStyle.__asdcPending = null;
+            if (next === cur) return;
             try {
               this._setIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
             } catch (err) {
               console.error("ASDC editor: gradient_style update failed", err);
             }
-          });
+          }, { deferUntilClosed: true });
 
 row2.appendChild(colorToRow);
           row2.appendChild(gradStyle);
@@ -4636,7 +4576,15 @@ row2.appendChild(colorToRow);
       next.color_intervals = this._config.color_intervals || [];
 
       // Preserve / normalize rows
-      next.rows = normalizeRowsConfig(this._config.rows, this._config.slides || [{ ...DEFAULT_SLIDE, title:"Slide 1" }]);
+      if (!Array.isArray(this._config.rows) || this._config.rows.length === 0) {
+        const baseSlides = this._config.slides || [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+        next.rows = [{ slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      } else {
+        next.rows = this._config.rows.map(r => {
+          const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+        });
+      }
 
       // Canonical top-level slides mirrors Row 1
       next.slides = next.rows[0].slides;
@@ -4661,23 +4609,27 @@ row2.appendChild(colorToRow);
       if (this._origType && !nextConfig.type) nextConfig.type = this._origType;
 
       // Ensure rows exist
-      let rows = normalizeRowsConfig(
-        nextConfig.rows,
-        (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
+      let rows = [];
+      if (Array.isArray(nextConfig.rows) && nextConfig.rows.length) {
+        rows = nextConfig.rows.map(r => {
+          const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+          return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
+        });
+      } else {
+        const baseSlides = (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
           ? nextConfig.slides
-          : [{ ...DEFAULT_SLIDE, title:"Slide 1" }]
-      );
+          : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
+        rows = [{ is_default: true, slides: baseSlides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) }];
+      }
 
       // Ensure exactly one default row flag exists (movable but not deletable)
       if (!rows.some(r => r && r.is_default)) {
         if (rows[0]) rows[0].is_default = true;
       }
       const ar = clampInt(this._activeRow || 0, 0, rows.length - 1);
-      const activeSlides = normalizeSlidesConfig(
-        (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
-          ? nextConfig.slides
-          : [{ ...DEFAULT_SLIDE, title:"Slide 1" }]
-      );
+      const activeSlides = (Array.isArray(nextConfig.slides) && nextConfig.slides.length)
+        ? nextConfig.slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }))
+        : [{ ...DEFAULT_SLIDE, title:"Slide 1" }];
 
       rows[ar] = { ...(rows[ar] || {}), slides: activeSlides };
       nextConfig.rows = rows;
@@ -4825,7 +4777,7 @@ row2.appendChild(colorToRow);
         return;
       }
       if (key === "__slide_title_icon_gap") {
-        const num = parseEditorNumber(v);
+        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
         const val = Number.isFinite(num) ? num : 6;
         this._slideCommitField("title_icon_gap", val);
         return;
@@ -4855,7 +4807,7 @@ row2.appendChild(colorToRow);
       }
 
       if (key === "__slide_progress_min" || key === "__slide_progress_max") {
-        const num = parseEditorNumber(v);
+        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
         const val = Number.isFinite(num) ? num : null;
         const field = (key === "__slide_progress_min") ? "progress_min" : "progress_max";
         this._slideCommitField(field, (val === null ? (field === "progress_min" ? 0 : 100) : val));
@@ -4864,7 +4816,7 @@ row2.appendChild(colorToRow);
 
 
       if (key === "__slide_decimals" || key === "__slide_auto_decimals") {
-        const num = parseEditorNumber(v);
+        const num = (v === "" || v === null || typeof v === "undefined") ? null : Number(v);
         const val = Number.isFinite(num) ? num : null;
         this._slideCommitField(key === "__slide_decimals" ? "decimals" : "auto_decimals", val);
         return;
@@ -4883,7 +4835,7 @@ row2.appendChild(colorToRow);
       }
 
       if (key === "__slide_stay_s" || key === "__slide_out_s" || key === "__slide_in_s") {
-        const num = parseEditorNumber(v);
+        const num = Number(v);
         const val = Number.isFinite(num) ? num : 0;
         const field = (key === "__slide_stay_s") ? "stay_s" : (key === "__slide_out_s") ? "out_s" : "in_s";
         this._slideCommitField(field, val);
@@ -5018,14 +4970,14 @@ row2.appendChild(colorToRow);
       const it = { ...(ints[idx] || {}) };
 
       if (key === "from" || key === "to") {
-        const num = parseEditorNumber(value);
+        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
         it[key] = Number.isFinite(num) ? num : 0;
       } else if (key === "match") {
         it.match = String(value || "").trim();
       } else if (key === "new_value") {
         it.new_value = String(value || "");
       } else if (key === "neon_strength") {
-        const num = parseEditorNumber(value);
+        const num = (value === "" || value === null || typeof value === "undefined") ? null : Number(value);
         it.neon_strength = Number.isFinite(num) ? Math.max(0, Math.min(100, Math.round(num))) : null;
       } else if (key === "color" || key === "color_to") {
         const norm = this._rowText._normalizeHex(String(value || ""), false);
