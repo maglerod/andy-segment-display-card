@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.0.9
+ * v2.1.0
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,13 +12,17 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.1.0 - 2026-04-28
+ * UI: Replaced deprecated ha-select / mwc-list-item in visual editors with modern ha-selector-based select controls
+ * UI: Updated editor boolean fields to use Home Assistant-compatible switch/formfield patterns where needed
+ * FIX: Improved compatibility with newer Home Assistant versions in visual editors
+ * FIX: Refactored editor select handling to avoid deprecated component usage and improve stability on reload/update
  *
-
  * 2.0.9 - 2026-04-24
  * UI: Better mobile-friendly numeric editor input for negative/decimal interval ranges
  * NEW: Auto-entities row shorthand support (row objects can be treated as single-slide rows)
  * PERF: Reduce per-render row normalization/allocation pressure for smoother mobile dashboards
-
+ *
  * 2.0.8 - 2026-02-14
  * PERF: Fix fixed-segment animation timer cleanup + reduce will-change GPU pressure
  * NEW: Interval NewValue (with variables + matrix tokens) + Interval Effect (Neon)
@@ -101,7 +105,7 @@
 
 (() => {
   
-  const CARD_VERSION = "2.0.9";
+  const CARD_VERSION = "2.1.0";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -2583,77 +2587,14 @@ _toggleRenderMode() {
 
       if (this._built) {
         try {
+          this.querySelectorAll("ha-selector").forEach((el) => {
+            el.hass = hass;
+          });
           if (this._slideEntity) this._slideEntity.hass = hass;
         } catch (e) {
           // ignore
         }
       }
-    }
-
-    _bindCompatSelect(sel, onCommit, { deferUntilClosed = false } = {}) {
-      if (!sel) return sel;
-
-      sel.__asdcPending = null;
-      sel.__asdcCommitted = null;
-
-      const stop = (e) => {
-        try { e.stopPropagation(); } catch (_) {}
-      };
-
-      const normalizeValue = (value) => String(value ?? "").trim();
-
-      const capture = (value) => {
-        const next = normalizeValue(value);
-        sel.__asdcPending = next;
-        return next;
-      };
-
-      const commitNow = (value) => {
-        const next = normalizeValue(value);
-        if (next === "") return;
-        if (sel.__asdcCommitted === next) return;
-        sel.__asdcCommitted = next;
-        sel.__asdcPending = null;
-
-        setTimeout(() => onCommit(next), 0);
-      };
-
-      sel.addEventListener("opened", stop);
-
-      sel.addEventListener("value-changed", (e) => {
-        if (this._isSyncing) return;
-        stop(e);
-        const next = capture(this._eventValue(e, sel));
-        if (!deferUntilClosed) commitNow(next);
-      });
-
-      sel.addEventListener("selected", (e) => {
-        if (this._isSyncing) return;
-        stop(e);
-        const next = capture(e?.detail?.value ?? sel.value);
-        if (!deferUntilClosed) commitNow(next);
-      });
-
-      sel.addEventListener("change", (e) => {
-        if (this._isSyncing) return;
-        stop(e);
-        const next = capture(this._eventValue(e, sel));
-        if (!deferUntilClosed) commitNow(next);
-      });
-
-      if (deferUntilClosed) {
-        sel.addEventListener("closed", (e) => {
-          if (this._isSyncing) return;
-          stop(e);
-          const next = sel.__asdcPending;
-          if (!next) return;
-          commitNow(next);
-        });
-      } else {
-        sel.addEventListener("closed", stop);
-      }
-
-      return sel;
     }
 
     _buildOnce() {
@@ -2754,6 +2695,7 @@ row._tf = tf;
           sel.label = "Entity";
           sel.configValue = key;
           sel.selector = { entity: {} };
+          sel.hass = this._hass;
           sel.addEventListener("value-changed", (e) => this._onChange(e));
           return sel;
         }
@@ -2765,22 +2707,67 @@ row._tf = tf;
         return ep;
       };
 
-      const mkSelect = (label, key, options) => {
-        const sel = document.createElement("ha-select");
-        sel.label = label;
-        sel.configValue = key;
-
-        options.forEach(([value, text]) => {
-          const item = document.createElement("mwc-list-item");
-          item.value = value;
-          item.innerText = text;
-          sel.appendChild(item);
+      this._normalizeSelectOptions = (options) =>
+        (options || []).map((opt) => {
+          if (Array.isArray(opt)) return { value: String(opt[0] ?? ""), label: String(opt[1] ?? opt[0] ?? "") };
+          return { value: String(opt?.value ?? ""), label: String(opt?.label ?? opt?.value ?? "") };
         });
 
-        return this._bindCompatSelect(sel, (value) => {
-          this._onChange({ target: sel, detail: { value } });
+      this._setSelectControlOptions = (control, options, value = "") => {
+        if (!control) return;
+        const normalized = this._normalizeSelectOptions(options);
+        const tag = control.tagName.toLowerCase();
+
+        if (tag === "ha-selector") {
+          control.selector = { select: { mode: "dropdown", options: normalized } };
+          control.hass = this._hass;
+          control.value = value;
+          try { control.requestUpdate?.(); } catch (_) {}
+          return;
+        }
+
+        while (control.firstChild) control.removeChild(control.firstChild);
+        normalized.forEach(({ value: optValue, label: optLabel }) => {
+          const item = document.createElement("option");
+          item.value = optValue;
+          item.textContent = optLabel;
+          control.appendChild(item);
         });
+        control.value = value;
       };
+
+      this._mkSelectControl = ({ label, key = "", options = [], value = "", onChange = null }) => {
+        const hasSelector = !!customElements.get("ha-selector");
+        const sel = hasSelector ? document.createElement("ha-selector") : document.createElement("select");
+
+        sel.label = label;
+        if (key) sel.configValue = key;
+        if (sel.tagName.toLowerCase() === "ha-selector") {
+          sel.hass = this._hass;
+        }
+
+        this._setSelectControlOptions(sel, options, value);
+
+        const handleChange = (e) => {
+          if (this._isSyncing) return;
+          try { e.stopPropagation(); } catch (_) {}
+          const next = this._eventValue(e, sel);
+          if (onChange) onChange(String(next ?? ""), e, sel);
+          else this._onChange(e);
+        };
+
+        sel.addEventListener("value-changed", handleChange);
+        sel.addEventListener("change", handleChange);
+        return sel;
+      };
+
+      const mkSelect = (label, key, options) =>
+        this._mkSelectControl({
+          label,
+          key,
+          options,
+          value: (this._config || {})[key] ?? "",
+        });
 
       const mkIconPicker = (label, key) => {
         const ip = document.createElement("ha-icon-picker");
@@ -3464,7 +3451,8 @@ row._tf = tf;
           gap:10px;
           align-items:end;
         }
-        .intervalRow ha-select { width: 100%; }
+        .intervalRow ha-selector,
+        .intervalRow select { width: 100%; }
         .intervalRow mwc-icon-button{
           margin-bottom: 6px;
         }
@@ -4085,29 +4073,30 @@ row._tf = tf;
         colorToRow.appendChild(tfTo);
         colorToRow.appendChild(btnTo);
 
-        const gradStyle = document.createElement("ha-select");
-        gradStyle.label = "Gradient style";
+        const gs = String(it.gradient_style || "linear").toLowerCase();
+        const gradStyle = this._mkSelectControl({
+          label: "Gradient style",
+          options: [
+            ["linear", "Linear"],
+            ["two-tone", "Two-tone"],
+            ["inside-out", "Inside-out"],
+            ["outside-in", "Outside-in"],
+          ],
+          value: gs || "linear",
+          onChange: (next, _event, control) => {
+            const cur = String(it?.gradient_style || control.value || "linear").trim().toLowerCase() || "linear";
+            if (next === cur) return;
+            try {
+              control.dataset.slideIntervalIndex = String(idx);
+              control.dataset.slideIntervalKey = "gradient_style";
+              this._setSlideIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
+            } catch (err) {
+              console.error("ASDC editor: gradient_style update failed", err);
+            }
+          },
+        });
         gradStyle.dataset.slideIntervalIndex = String(idx);
         gradStyle.dataset.slideIntervalKey = "gradient_style";
-        const gs = String(it.gradient_style || "linear").toLowerCase();
-
-        // Use .value to keep HA editor in sync (selected attr is unreliable across versions)
-        gradStyle.innerHTML = `
-          <mwc-list-item value="linear">Linear</mwc-list-item>
-          <mwc-list-item value="two-tone">Two-tone</mwc-list-item>
-          <mwc-list-item value="inside-out">Inside-out</mwc-list-item>
-          <mwc-list-item value="outside-in">Outside-in</mwc-list-item>
-        `;
-        gradStyle.value = gs || "linear";
-        this._bindCompatSelect(gradStyle, (next) => {
-          const cur = String(it?.gradient_style || gradStyle.value || "linear").trim().toLowerCase() || "linear";
-          if (next === cur) return;
-          try {
-            this._setSlideIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
-          } catch (err) {
-            console.error("ASDC editor: gradient_style update failed", err);
-          }
-        }, { deferUntilClosed: true });
 
 // Show/Hide per render style
         if (_isSegOrMat) {
@@ -4406,26 +4395,27 @@ row._tf = tf;
           colorToRow.appendChild(colorTo);
           colorToRow.appendChild(colorToBtn);
 
-          const gradStyle = document.createElement("ha-select");
-          gradStyle.label = "Gradient style";
-          // IMPORTANT: use dataset keys expected by _onIntervalChange (and set .value)
+          const gradStyle = this._mkSelectControl({
+            label: "Gradient style",
+            options: [
+              ["linear", "Linear"],
+              ["two-tone", "Two-tone"],
+              ["inside-out", "Inside-out"],
+              ["outside-in", "Outside-in"],
+            ],
+            value: String(it?.gradient_style || "linear").toLowerCase(),
+            onChange: (next, _event, control) => {
+              const cur = String((it && it.gradient_style) || control.value || "linear").trim().toLowerCase() || "linear";
+              if (next === cur) return;
+              try {
+                this._setIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
+              } catch (err) {
+                console.error("ASDC editor: gradient_style update failed", err);
+              }
+            },
+          });
+          // IMPORTANT: use dataset keys expected by _onIntervalChange
           setFieldMeta(gradStyle, idx, "gradient_style");
-          gradStyle.innerHTML = `
-            <mwc-list-item value="linear">Linear</mwc-list-item>
-            <mwc-list-item value="two-tone">Two-tone</mwc-list-item>
-            <mwc-list-item value="inside-out">Inside-out</mwc-list-item>
-            <mwc-list-item value="outside-in">Outside-in</mwc-list-item>
-          `;
-          gradStyle.value = String(it?.gradient_style || "linear").toLowerCase();
-          this._bindCompatSelect(gradStyle, (next) => {
-            const cur = String((it && it.gradient_style) || gradStyle.value || "linear").trim().toLowerCase() || "linear";
-            if (next === cur) return;
-            try {
-              this._setIntervalValue(idx, "gradient_style", next, /*noSync*/ true);
-            } catch (err) {
-              console.error("ASDC editor: gradient_style update failed", err);
-            }
-          }, { deferUntilClosed: true });
 
 row2.appendChild(colorToRow);
           row2.appendChild(gradStyle);
@@ -4648,24 +4638,7 @@ row2.appendChild(colorToRow);
 
     _eventValue(ev, target) {
       if (ev && ev.detail && typeof ev.detail.value !== "undefined") return ev.detail.value;
-
-      // ha-select / mwc-select: value handling can differ between events
-      const t = target;
-      try {
-        const name = (t && (t.localName || t.tagName || "")).toString().toLowerCase();
-        if (name === "ha-select" || name === "mwc-select") {
-          if (typeof t.value !== "undefined" && t.value !== null && String(t.value) !== "") return t.value;
-          // Fallback: resolve from selected index and items
-          const sel = (typeof t.selected !== "undefined") ? Number(t.selected) : NaN;
-          const items = t.items || t.querySelectorAll?.("mwc-list-item");
-          if (Number.isFinite(sel) && items && items.length && items[sel]) {
-            const v = items[sel].getAttribute?.("value") ?? items[sel].value;
-            if (typeof v !== "undefined") return v;
-          }
-        }
-      } catch (e) {}
-
-      return t ? t.value : undefined;
+      return target ? target.value : undefined;
     }
 
     _onChange(ev) {
