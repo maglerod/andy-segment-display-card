@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.1.0
+ * v2.2.0
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,9 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.2.0 - 2026-07-14
+ * FIX: Visual editor text, number and color fields now support Home Assistant 2026.5+ (ha-input), while retaining compatibility with older ha-textfield versions.
+ *
  * 2.1.0 - 2026-04-28
  * UI: Replaced deprecated ha-select / mwc-list-item in visual editors with modern ha-selector-based select controls
  * UI: Updated editor boolean fields to use Home Assistant-compatible switch/formfield patterns where needed
@@ -105,7 +108,7 @@
 
 (() => {
   
-  const CARD_VERSION = "2.1.0";
+   const CARD_VERSION = "2.2.0";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -2575,6 +2578,19 @@ _toggleRenderMode() {
   }
 
   // -------------------- Editor (UI) --------------------
+  function createEditorInput() {
+    const hasHaInput = !!customElements.get("ha-input");
+    const input = document.createElement(hasHaInput ? "ha-input" : "ha-textfield");
+    if (hasHaInput) {
+      Object.defineProperty(input, "helperText", {
+        configurable: true,
+        get() { return this.hint || ""; },
+        set(value) { this.hint = value == null ? "" : String(value); },
+      });
+    }
+    return input;
+  }
+
   class AndySegmentDisplayCardEditor extends HTMLElement {
     setConfig(config) {
       this._config = migrateConfig(config);
@@ -2605,7 +2621,7 @@ _toggleRenderMode() {
       root.className = "form";
 
       const mkText = (label, key, type = "text", placeholder = "") => {
-        const tf = document.createElement("ha-textfield");
+        const tf = createEditorInput();
         tf.label = label;
         tf.type = type;
         tf.placeholder = placeholder;
@@ -2653,7 +2669,7 @@ _toggleRenderMode() {
         const row = document.createElement("div");
         row.className = "colorRow";
 
-        const tf = document.createElement("ha-textfield");
+        const tf = createEditorInput();
         tf.label = label;
         tf.placeholder = allowEmpty ? "(empty = default gray)" : "#RRGGBB";
         tf.configValue = key;
@@ -3188,7 +3204,7 @@ row._tf = tf;
         const row = document.createElement("div");
         row.className = "colorRow";
 
-        const tf = document.createElement("ha-textfield");
+        const tf = createEditorInput();
         tf.label = label;
         tf.type = "text";
         tf.placeholder = allowEmpty ? "(empty = default)" : "#RRGGBB";
@@ -3387,7 +3403,7 @@ row._tf = tf;
         
 
         .colorRow { display:grid; grid-template-columns: 1fr 44px; align-items:end; gap:10px; }
-        .colorRow ha-textfield { width: 100%; }
+         .colorRow ha-input, .colorRow ha-textfield { width: 100%; }
 
         .colorBtn{
           width: 44px;
@@ -3972,7 +3988,7 @@ row._tf = tf;
         wrap.appendChild(row);
         wrap.appendChild(row2);
 
-        const from = document.createElement("ha-textfield");
+        const from = createEditorInput();
         from.label = "Value from";
         from.type = "number";
         from.value = (typeof it.from === "number" || typeof it.from === "string") ? String(it.from) : "";
@@ -3981,7 +3997,7 @@ row._tf = tf;
         from.addEventListener("change", (e) => this._onSlideIntervalChange(e));
         from.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
 
-        const to = document.createElement("ha-textfield");
+        const to = createEditorInput();
         to.label = "To";
         to.type = "number";
         to.value = (typeof it.to === "number" || typeof it.to === "string") ? String(it.to) : "";
@@ -3990,7 +4006,7 @@ row._tf = tf;
         to.addEventListener("change", (e) => this._onSlideIntervalChange(e));
         to.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
 
-        const match = document.createElement("ha-textfield");
+        const match = createEditorInput();
         match.label = "Match value";
         match.placeholder = "e.g. on, off, open, closed";
         match.value = (typeof it.match === "string") ? it.match : "";
@@ -3999,7 +4015,7 @@ row._tf = tf;
         match.addEventListener("change", (e) => this._onSlideIntervalChange(e));
         match.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
 
-        const newValue = document.createElement("ha-textfield");
+        const newValue = createEditorInput();
         newValue.label = "NewValue (optional)";
         newValue.placeholder = "e.g. <value>°C <thermometer> or Too hot!";
         newValue.value = (typeof it.new_value === "string") ? it.new_value : "";
@@ -4008,7 +4024,7 @@ row._tf = tf;
         newValue.addEventListener("change", (e) => this._onSlideIntervalChange(e));
         newValue.addEventListener("value-changed", (e) => this._onSlideIntervalChange(e));
 
-        const neonStrength = document.createElement("ha-textfield");
+        const neonStrength = createEditorInput();
         neonStrength.label = "Neon %";
         neonStrength.type = "number";
         neonStrength.step = "1";
@@ -4022,7 +4038,7 @@ row._tf = tf;
 
         const colorRow = document.createElement("div");
         colorRow.className = "colorRow";
-        const tf = document.createElement("ha-textfield");
+        const tf = createEditorInput();
         tf.label = "Color";
         tf.value = String(it.color || this._config.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
         tf.dataset.slideIntervalIndex = String(idx);
@@ -4049,7 +4065,7 @@ row._tf = tf;
         // Gradient (only for Segment + Matrix). Enabled when Color To is set.
         const colorToRow = document.createElement("div");
         colorToRow.className = "colorRow";
-        const tfTo = document.createElement("ha-textfield");
+        const tfTo = createEditorInput();
         tfTo.label = "Color To (gradient)";
         tfTo.value = String(it.color_to || "").toUpperCase();
         tfTo.dataset.slideIntervalIndex = String(idx);
@@ -4295,7 +4311,7 @@ row._tf = tf;
         wrap.appendChild(row2);
 
         // --- Row 1: from / to / match / new_value / neon (plain only) / color ---
-        const from = document.createElement("ha-textfield");
+        const from = createEditorInput();
         from.label = "Value from";
         from.type = "number";
         from.value = (it?.from !== undefined && it?.from !== null) ? String(it.from) : "";
@@ -4303,7 +4319,7 @@ row._tf = tf;
         from.addEventListener("change", (e) => this._onIntervalChange(e));
         from.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
-        const to = document.createElement("ha-textfield");
+        const to = createEditorInput();
         to.label = "To";
         to.type = "number";
         to.value = (it?.to !== undefined && it?.to !== null) ? String(it.to) : "";
@@ -4311,21 +4327,21 @@ row._tf = tf;
         to.addEventListener("change", (e) => this._onIntervalChange(e));
         to.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
-        const match = document.createElement("ha-textfield");
+        const match = createEditorInput();
         match.label = "Match (optional)";
         match.value = (typeof it?.match === "string") ? it.match : "";
         setFieldMeta(match, idx, "match");
         match.addEventListener("change", (e) => this._onIntervalChange(e));
         match.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
-        const newVal = document.createElement("ha-textfield");
+        const newVal = createEditorInput();
         newVal.label = "New value";
         newVal.value = (typeof it?.new_value === "string") ? it.new_value : "";
         setFieldMeta(newVal, idx, "new_value");
         newVal.addEventListener("change", (e) => this._onIntervalChange(e));
         newVal.addEventListener("value-changed", (e) => this._onIntervalChange(e));
 
-        const neon = document.createElement("ha-textfield");
+        const neon = createEditorInput();
         neon.label = "Neon %";
         neon.type = "number";
         neon.step = "1";
@@ -4336,7 +4352,7 @@ row._tf = tf;
 
         const colorRow = document.createElement("div");
         colorRow.className = "colorRow";
-        const color = document.createElement("ha-textfield");
+        const color = createEditorInput();
         color.label = "Color";
         color.value = String(it?.color || this._config.text_color || DEFAULTS_GLOBAL.text_color).toUpperCase();
         setFieldMeta(color, idx, "color");
@@ -4375,7 +4391,7 @@ row._tf = tf;
           const colorToRow = document.createElement("div");
           colorToRow.className = "colorRow";
 
-          const colorTo = document.createElement("ha-textfield");
+          const colorTo = createEditorInput();
           colorTo.label = "Color To";
           colorTo.value = String(it?.color_to || "").toUpperCase();
           setFieldMeta(colorTo, idx, "color_to");
@@ -4457,7 +4473,7 @@ row2.appendChild(colorToRow);
       if (this._slideTitleIconGap) this._slideTitleIconGap.value = (s.title_icon_gap === null || s.title_icon_gap === undefined) ? "6" : String(s.title_icon_gap);
 
       if (this._slideTitleTextColor) {
-        const tf = this._slideTitleTextColor.querySelector("ha-textfield");
+        const tf = this._slideTitleTextColor.querySelector("ha-input, ha-textfield");
         const btn = this._slideTitleTextColor.querySelector("input[type=color]");
         const val = s.title_text_color || "";
         if (tf) tf.value = val;
@@ -4465,7 +4481,7 @@ row2.appendChild(colorToRow);
       }
 
       if (this._slideTitleIconColor) {
-        const tf = this._slideTitleIconColor.querySelector("ha-textfield");
+        const tf = this._slideTitleIconColor.querySelector("ha-input, ha-textfield");
         const btn = this._slideTitleIconColor.querySelector("input[type=color]");
         const val = s.title_icon_color || "";
         if (tf) tf.value = val;
