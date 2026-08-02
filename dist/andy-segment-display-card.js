@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.2.0
+ * v2.2.1
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,9 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.2.1 - 2026-08-02
+ * FIX: Keep the most recent value briefly while Home Assistant delivers a transiently missing entity state; entity IDs are trimmed before lookup.
+ *
  * 2.2.0 - 2026-07-14
  * FIX: Visual editor text, number and color fields now support Home Assistant 2026.5+ (ha-input), while retaining compatibility with older ha-textfield versions.
  *
@@ -108,7 +111,7 @@
 
 (() => {
   
-   const CARD_VERSION = "2.2.0";
+   const CARD_VERSION = "2.2.1";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -1222,9 +1225,10 @@ _scheduleRender(force = false) {
           liveTimer: 0,
           liveMode: null,
           liveFinishesAt: 0,
-          liveRemainingBase: 0,
-          liveStartMs: 0,
-          _lastAnimText: null,
+           liveRemainingBase: 0,
+           liveStartMs: 0,
+           _lastAnimText: null,
+           lastKnownValues: new Map(),
         });
       }
       if (this._rowStates.length > count) {
@@ -1846,7 +1850,8 @@ _scheduleRender(force = false) {
         const slides = Array.isArray(row.slides) ? row.slides : [{ ...DEFAULT_SLIDE }];
         const slide = slides[st.slideIndex] || slides[0] || DEFAULT_SLIDE;
 
-        const stateObj = (this._hass && slide.entity) ? this._hass.states[slide.entity] : null;
+        const entityId = String(slide.entity || "").trim();
+        const stateObj = (this._hass && entityId) ? this._hass.states?.[entityId] : null;
 
         const mergedForValue = {
           ...DEFAULTS_GLOBAL,
@@ -1858,10 +1863,20 @@ _scheduleRender(force = false) {
         };
 
         
-        let valueStr = toDisplayString(stateObj, mergedForValue);
+        let valueStr;
+        if (stateObj) {
+          valueStr = toDisplayString(stateObj, mergedForValue);
+          st.lastKnownValues.set(entityId, { value: valueStr, seenAt: Date.now() });
+        } else {
+          // Home Assistant can briefly omit a state during an update. Retain only a
+          // very recent value so a real missing/invalid entity is still surfaced.
+          const cached = entityId ? st.lastKnownValues.get(entityId) : null;
+          const isRecent = cached && (Date.now() - cached.seenAt) <= 5000;
+          valueStr = isRecent ? cached.value : toDisplayString(null, mergedForValue);
+        }
 
         // Timer entity support (per slide)
-        const domain = (slide.entity || "").split(".")[0] || "";
+        const domain = entityId.split(".")[0] || "";
         const timerMode = String(slide.timer_mode || "").trim(); // remaining|duration|finishes_at|finishes_in|state
         if (domain === "timer" && stateObj) {
           const mode = timerMode || "remaining";
@@ -1903,8 +1918,8 @@ _scheduleRender(force = false) {
           state: stateObj?.state ?? "",
           name: stateObj?.attributes?.friendly_name ?? slide.title ?? "",
           unit: stateObj?.attributes?.unit_of_measurement ?? "",
-          entity_id: slide.entity ?? "",
-          domain: (slide.entity || "").split(".")[0] || "",
+          entity_id: entityId,
+          domain: entityId.split(".")[0] || "",
           last_changed: formatTimeLocal(stateObj?.last_changed),
           last_updated: formatTimeLocal(stateObj?.last_updated),
           last_changed_rel: formatRel(stateObj?.last_changed),
@@ -1920,7 +1935,7 @@ _scheduleRender(force = false) {
         const intervalsForRule = (Array.isArray(slide.color_intervals) && slide.color_intervals.length) ? slide.color_intervals : (cfg.color_intervals || []);
         let intervalN = toNumberOrNull(stateObj);
         // Timer entities: allow interval matching on remaining seconds if a timer_mode is active
-        if (stateObj && String(slide.timer_mode || "").trim() && String(slide.entity || "").startsWith("timer.")) {
+        if (stateObj && String(slide.timer_mode || "").trim() && entityId.startsWith("timer.")) {
           const mode = String(slide.timer_mode || "").trim();
           const durS = parseHmsToSeconds(stateObj.attributes?.duration);
           const remAttrS = parseHmsToSeconds(stateObj.attributes?.remaining);
@@ -2208,7 +2223,7 @@ if ((style || "segment") === "segment" && effMax > 0 && displayStr.length < effM
 
           if (style === "plain") {
             els.display.innerHTML = `<div class="plainText ${italicAllowed ? "asdc-italic" : ""}">${displayStr}</div>`;
-            els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
+            els.display.setAttribute("aria-label", `${entityId || "entity"} value ${displayStr}`);
 
             requestAnimationFrame(() => {
               const pt = els.display.querySelector(".plainText");
@@ -2287,7 +2302,7 @@ if ((style || "segment") === "segment" && effMax > 0 && displayStr.length < effM
 
 
             els.display.innerHTML = html;
-            els.display.setAttribute("aria-label", `${slide.entity || "entity"} value ${displayStr}`);
+            els.display.setAttribute("aria-label", `${entityId || "entity"} value ${displayStr}`);
           }
         }
 
