@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.2.2
+
+- FIX: Restore Auto-Entities row shorthand support. Rows that contain an `entity` directly are now converted to a renderable slide instead of displaying an empty value.
+- FIX: Preserve row metadata such as `is_default` while normalizing shorthand rows.
+
 ## v2.0 
 - Multi-entity support (Slides): rotate between multiple entities instead of showing only one
 - Slide-based animation engine: configurable In / Stay / Out timing per slide

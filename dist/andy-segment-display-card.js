@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.2.1
+ * v2.2.2
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,9 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.2.2 - 2026-08-12
+ * FIX: Restore support for Auto-Entities row shorthand so direct row entities are rendered instead of becoming empty slides.
+ *
  * 2.2.1 - 2026-08-02
  * FIX: Keep the most recent value briefly while Home Assistant delivers a transiently missing entity state; entity IDs are trimmed before lookup.
  *
@@ -111,7 +114,7 @@
 
 (() => {
   
-   const CARD_VERSION = "2.2.1";
+   const CARD_VERSION = "2.2.2";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -919,6 +922,39 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
     el.classList.remove("asdc-anim");
   }
 
+  function normalizeSlideConfig(slide) {
+    return { ...DEFAULT_SLIDE, ...(slide || {}) };
+  }
+
+  function normalizeSlidesConfig(slides) {
+    if (Array.isArray(slides) && slides.length) {
+      return slides.map((slide) => normalizeSlideConfig(slide));
+    }
+    return [{ ...DEFAULT_SLIDE }];
+  }
+
+  function normalizeRowConfig(row) {
+    const base = { ...(row || {}) };
+
+    if (Array.isArray(base.slides) && base.slides.length) {
+      return { ...base, slides: normalizeSlidesConfig(base.slides) };
+    }
+
+    // Auto-Entities can supply each row directly as an entity/slide object.
+    // Keep row metadata, but turn its slide fields into one renderable slide.
+    const slideSource = { ...base };
+    delete slideSource.slides;
+    delete slideSource.is_default;
+    return { ...base, slides: normalizeSlidesConfig([slideSource]) };
+  }
+
+  function normalizeRowsConfig(rows, fallbackSlides) {
+    if (Array.isArray(rows) && rows.length) {
+      return rows.map((row) => normalizeRowConfig(row));
+    }
+    return [{ ...DEFAULT_ROW, is_default: true, slides: normalizeSlidesConfig(fallbackSlides) }];
+  }
+
   // -------------------- Config migration --------------------
   function migrateConfig(config) {
     const cfg = config || {};
@@ -936,10 +972,7 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
       global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
       global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
-      const rows = cfg.rows.map((r) => {
-        const slides = (Array.isArray(r?.slides) && r.slides.length) ? r.slides : [{ ...DEFAULT_SLIDE }];
-        return { ...(r || {}), slides: slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) })) };
-      });
+      const rows = normalizeRowsConfig(cfg.rows, cfg.slides);
       // keep backward-compatible top-level slides as row 0
       return { ...(_type ? { type: _type } : {}), ...global, rows, slides: rows[0].slides };
     }
@@ -955,8 +988,7 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
       global.title_reserve_px = Number(global.title_reserve_px ?? DEFAULTS_GLOBAL.title_reserve_px) || 0;
       global.char_gap_px = Number(global.char_gap_px ?? DEFAULTS_GLOBAL.char_gap_px) || DEFAULTS_GLOBAL.char_gap_px;
       global.color_intervals = Array.isArray(cfg.color_intervals) ? cfg.color_intervals : (global.color_intervals || []);
-      const slides = cfg.slides.length > 0 ? cfg.slides : [{ ...DEFAULT_SLIDE }];
-      const normSlides = slides.map(s => ({ ...DEFAULT_SLIDE, ...(s || {}) }));
+      const normSlides = normalizeSlidesConfig(cfg.slides);
       return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
     }
 
@@ -985,7 +1017,7 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
     slide.leading_zero = cfg.leading_zero !== false;
     slide.show_unit = !!cfg.show_unit;
 
-    const normSlides = [slide];
+    const normSlides = normalizeSlidesConfig([slide]);
     return { ...(_type ? { type: _type } : {}), ...global, rows: [{ ...DEFAULT_ROW, slides: normSlides }], slides: normSlides };
   }
 
