@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.2.3
+
+- FIX: Always render Home Assistant state updates, preventing blank values on older Android/WebView dashboards that incorrectly report themselves as hidden.
+
 ## v2.2.2
 
 - FIX: Restore Auto-Entities row shorthand support. Rows that contain an `entity` directly are now converted to a renderable slide instead of displaying an empty value.

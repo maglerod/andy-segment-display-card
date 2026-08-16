@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.2.2
+ * v2.2.3
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,9 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.2.3 - 2026-08-16
+ * FIX: Always render incoming Home Assistant state updates, even when older browsers report the dashboard as hidden.
+ *
  * 2.2.2 - 2026-08-12
  * FIX: Restore support for Auto-Entities row shorthand so direct row entities are rendered instead of becoming empty slides.
  *
@@ -114,7 +117,7 @@
 
 (() => {
   
-   const CARD_VERSION = "2.2.2";
+   const CARD_VERSION = "2.2.3";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -1070,7 +1073,10 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
 
     set hass(hass) {
       this._hass = hass;
-      this._scheduleRender();
+      // State updates must always be visible. Some older Android WebViews report
+      // document.hidden while a wall dashboard is on screen, so do not let the
+      // background-render optimization suppress a real Home Assistant update.
+      this._scheduleRender(true);
     }
 
     connectedCallback() {

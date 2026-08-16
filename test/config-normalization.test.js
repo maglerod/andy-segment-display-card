@@ -37,4 +37,11 @@ const explicit = migrateConfig({
 assert.equal(explicit.rows[0].is_default, true);
 assert.equal(explicit.rows[0].slides[0].entity, "sensor.temperature");
 
-console.log("Config normalization tests passed.");
+const Card = registered.get("andy-segment-display-card");
+const card = new Card();
+let forceRender;
+card._scheduleRender = (force) => { forceRender = force; };
+card.hass = { states: {} };
+assert.equal(forceRender, true, "Home Assistant state updates must bypass visibility throttling");
+
+console.log("Config normalization and state-render tests passed.");
