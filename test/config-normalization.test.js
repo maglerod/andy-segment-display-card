@@ -37,6 +37,18 @@ const explicit = migrateConfig({
 assert.equal(explicit.rows[0].is_default, true);
 assert.equal(explicit.rows[0].slides[0].entity, "sensor.temperature");
 
+const singleObjectRows = migrateConfig({
+  render_style: "plain",
+  slides: { entity: "sensor.trygg_stromregning_justert", value_template: "<value> kr" },
+  rows: {
+    slides: { entity: "sensor.trygg_stromregning_justert", value_template: "<value> kr" },
+    is_default: true,
+  },
+});
+assert.equal(singleObjectRows.rows[0].slides[0].entity, "sensor.trygg_stromregning_justert");
+assert.equal(singleObjectRows.rows[0].slides[0].value_template, "<value> kr");
+assert.equal(singleObjectRows.rows[0].is_default, true);
+
 const Card = registered.get("andy-segment-display-card");
 const card = new Card();
 let forceRender;

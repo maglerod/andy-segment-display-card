@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.2.4
+
+- FIX: Normalize single-object `rows` and `slides` configurations from older visual-editor saves, so the selected entity is retained after saving.
+
 ## v2.2.3
 
 - FIX: Always render Home Assistant state updates, preventing blank values on older Android/WebView dashboards that incorrectly report themselves as hidden.

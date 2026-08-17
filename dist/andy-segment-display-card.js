@@ -1,5 +1,5 @@
 /* Andy Segment Display Card (Home Assistant Lovelace Custom Card)
- * v2.2.3
+ * v2.2.4
  * ------------------------------------------------------------------
  * Developed by: Andreas ("AndyBonde") with some help from AI :).
  *
@@ -12,6 +12,9 @@
  * Install: Se README.md in GITHUB
  *
  * Changelog
+ * 2.2.4 - 2026-08-17
+ * FIX: Accept single-object rows and slides emitted by older visual-editor configurations, preventing the entity from being replaced by an empty slide after save.
+ *
  * 2.2.3 - 2026-08-16
  * FIX: Always render incoming Home Assistant state updates, even when older browsers report the dashboard as hidden.
  *
@@ -117,7 +120,7 @@
 
 (() => {
   
-   const CARD_VERSION = "2.2.3";
+   const CARD_VERSION = "2.2.4";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -929,9 +932,18 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
     return { ...DEFAULT_SLIDE, ...(slide || {}) };
   }
 
+  function isConfigObject(value) {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function hasConfigItems(value) {
+    return (Array.isArray(value) && value.length > 0) || isConfigObject(value);
+  }
+
   function normalizeSlidesConfig(slides) {
-    if (Array.isArray(slides) && slides.length) {
-      return slides.map((slide) => normalizeSlideConfig(slide));
+    const items = Array.isArray(slides) ? slides : (isConfigObject(slides) ? [slides] : []);
+    if (items.length) {
+      return items.map((slide) => normalizeSlideConfig(slide));
     }
     return [{ ...DEFAULT_SLIDE }];
   }
@@ -939,7 +951,7 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
   function normalizeRowConfig(row) {
     const base = { ...(row || {}) };
 
-    if (Array.isArray(base.slides) && base.slides.length) {
+    if (hasConfigItems(base.slides)) {
       return { ...base, slides: normalizeSlidesConfig(base.slides) };
     }
 
@@ -952,8 +964,9 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
   }
 
   function normalizeRowsConfig(rows, fallbackSlides) {
-    if (Array.isArray(rows) && rows.length) {
-      return rows.map((row) => normalizeRowConfig(row));
+    const items = Array.isArray(rows) ? rows : (isConfigObject(rows) ? [rows] : []);
+    if (items.length) {
+      return items.map((row) => normalizeRowConfig(row));
     }
     return [{ ...DEFAULT_ROW, is_default: true, slides: normalizeSlidesConfig(fallbackSlides) }];
   }
@@ -964,7 +977,7 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
     const _type = cfg.type;
 
     // v2.1+ (rows) migration / normalization
-    if (Array.isArray(cfg.rows) && cfg.rows.length) {
+    if (hasConfigItems(cfg.rows)) {
       const global = { ...DEFAULTS_GLOBAL, ...(cfg.global || cfg) };
       // Sanitize a few common fields (HA editor components sometimes emit "" or strings)
       if (typeof global.show_title !== "boolean") global.show_title = (DEFAULTS_GLOBAL.show_title !== false);
@@ -981,7 +994,7 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
     }
 
     // If already v2-like (slides only)
-    if (Array.isArray(cfg.slides)) {
+    if (hasConfigItems(cfg.slides)) {
       const global = { ...DEFAULTS_GLOBAL, ...(cfg.global || cfg) };
       if (typeof global.show_title !== "boolean") global.show_title = (DEFAULTS_GLOBAL.show_title !== false);
       if (typeof global.show_unused !== "boolean") global.show_unused = (DEFAULTS_GLOBAL.show_unused !== false);

@@ -1,4 +1,4 @@
-# Andy Segment Display Card V2.2.3
+# Andy Segment Display Card V2.2.4
 
 ### 7-segment mode (numeric) Dot-matrix mode (text) & Plain text
 ![Preview of display](Images/segment-display-card.png)
