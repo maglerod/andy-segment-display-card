@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const sourcePath = "dist/andy-segment-display-card.js";
 const source = fs.readFileSync(sourcePath, "utf8").replace(
   /\}\)\(\);\s*$/,
-  ";globalThis.__asdcTest = { migrateConfig }; })();"
+  ";globalThis.__asdcTest = { migrateConfig, AndySegmentDisplayCard }; })();"
 );
 
 const registered = new Map();
@@ -21,7 +21,7 @@ sandbox.globalThis = sandbox;
 sandbox.window = sandbox;
 vm.runInNewContext(source, sandbox, { filename: sourcePath });
 
-const { migrateConfig } = sandbox.__asdcTest;
+const { migrateConfig, AndySegmentDisplayCard } = sandbox.__asdcTest;
 
 const shorthand = migrateConfig({
   type: "custom:andy-segment-display-card",
@@ -55,5 +55,20 @@ let forceRender;
 card._scheduleRender = (force) => { forceRender = force; };
 card.hass = { states: {} };
 assert.equal(forceRender, true, "Home Assistant state updates must bypass visibility throttling");
+
+const reconnectCard = new AndySegmentDisplayCard();
+const savedConfig = { rows: [{ slides: [{ entity: "sensor.power_cost" }] }] };
+const savedHass = { states: { "sensor.power_cost": { state: "257.16" } } };
+const savedRowEls = [{ display: {} }];
+const savedRowStates = [{ lastText: "257.16" }];
+reconnectCard._config = savedConfig;
+reconnectCard._hass = savedHass;
+reconnectCard._rowEls = savedRowEls;
+reconnectCard._rowStates = savedRowStates;
+reconnectCard.disconnectedCallback();
+assert.equal(reconnectCard._config, savedConfig, "Reconnects must retain card configuration");
+assert.equal(reconnectCard._hass, savedHass, "Reconnects must retain Home Assistant state");
+assert.equal(reconnectCard._rowEls, savedRowEls, "Reconnects must retain built row elements");
+assert.equal(reconnectCard._rowStates, savedRowStates, "Reconnects must retain row state");
 
 console.log("Config normalization and state-render tests passed.");

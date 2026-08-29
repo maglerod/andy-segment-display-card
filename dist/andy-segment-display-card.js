@@ -120,7 +120,7 @@
 
 (() => {
   
-   const CARD_VERSION = "2.2.4";
+   const CARD_VERSION = "2.2.5-alpha.1";
   const CARD_TAG = "andy-segment-display-card";
   const EDITOR_TAG = `${CARD_TAG}-editor`;
   const CARD_NAME = "Andy Segment Displaycard Card";
@@ -1136,12 +1136,10 @@ function svgForMatrixCharPainted(ch, cfg, paint, dotOnOverride) {
         document.removeEventListener("visibilitychange", this._onVisChange);
         this._onVisChange = null;
       }
-      // Release references to help GC in long-running dashboards
-      this._rowEls = null;
-      this._rowStates = [];
-      this._slides = null;
-      this._config = null;
-      this._hass = null;
+      // A card can be temporarily removed and reinserted by Home Assistant,
+      // card-mod, or a dashboard layout. `disconnectedCallback` is therefore
+      // not a destruction signal: keep its config, state and DOM references so
+      // that the next hass update can render normally after reconnecting.
     }
 
     getCardSize() {

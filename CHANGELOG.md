@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.2.5-alpha.1
+
+- FIX: Preserve the card's configuration and Home Assistant state when a dashboard temporarily disconnects and reconnects the card. This prevents an already-rendered value from falling back to `—` after a layout, card-mod, or browser lifecycle update.
+
 ## v2.2.4
 
 - FIX: Normalize single-object `rows` and `slides` configurations from older visual-editor saves, so the selected entity is retained after saving.
