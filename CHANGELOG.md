@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.2.5-alpha.1
+## v2.2.5
 
 - FIX: Preserve the card's configuration and Home Assistant state when a dashboard temporarily disconnects and reconnects the card. This prevents an already-rendered value from falling back to `—` after a layout, card-mod, or browser lifecycle update.
 
